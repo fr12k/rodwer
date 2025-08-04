@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24.1'
+        cache: true
+    
+    - name: Download dependencies
+      run: go mod download
+    
+    - name: Run tests with XVFB
+      run: |
+          xvfb-run go test -short -v
+          xvfb-run go test -v -timeout=10m
+          xvfb-run go test -short -coverprofile=coverage.txt ./...
+      env:
+        # https://github.com/microsoft/vscode-test/issues/127
+        DBUS_SESSION_BUS_ADDRESS: ""
+    
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: |
+          coverage.txt
+          coverage/
