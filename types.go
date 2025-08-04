@@ -3,6 +3,7 @@ package rodwer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -498,6 +499,60 @@ func (p *Page) ScreenshotSimple() ([]byte, error) {
 	})
 }
 
+// ScreenshotToFile captures page screenshot and saves directly to file
+func (p *Page) ScreenshotToFile(filePath string, options ...ScreenshotOptions) error {
+	if filePath == "" {
+		return fmt.Errorf("file path cannot be empty")
+	}
+
+	// Use default options if none provided
+	var opts ScreenshotOptions
+	if len(options) > 0 {
+		opts = options[0]
+	} else {
+		opts = ScreenshotOptions{
+			Format: "png",
+		}
+	}
+
+	// Auto-detect format from file extension if not specified
+	if opts.Format == "" {
+		ext := strings.ToLower(filepath.Ext(filePath))
+		switch ext {
+		case ".jpg", ".jpeg":
+			opts.Format = "jpeg"
+		case ".png":
+			opts.Format = "png"
+		default:
+			opts.Format = "png" // default to PNG
+		}
+	}
+
+	// Take screenshot
+	data, err := p.Screenshot(opts)
+	if err != nil {
+		return fmt.Errorf("failed to take screenshot: %w", err)
+	}
+
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write screenshot to file %s: %w", filePath, err)
+	}
+
+	return nil
+}
+
+// ScreenshotSimpleToFile captures page screenshot with default options and saves to file
+func (p *Page) ScreenshotSimpleToFile(filePath string) error {
+	return p.ScreenshotToFile(filePath)
+}
+
 // StartJSCoverage starts JavaScript coverage collection
 func (p *Page) StartJSCoverage() error {
 	p.mu.RLock()
@@ -730,6 +785,50 @@ func (e Element) Screenshot() ([]byte, error) {
 	return e.page.screenshotElement(e, ScreenshotOptions{
 		Format: "png",
 	})
+}
+
+// ScreenshotToFile takes a screenshot of the element and saves directly to file
+func (e Element) ScreenshotToFile(filePath string) error {
+	if filePath == "" {
+		return fmt.Errorf("file path cannot be empty")
+	}
+
+	if e.element == nil {
+		return fmt.Errorf("element is nil")
+	}
+
+	// Auto-detect format from file extension
+	var format string
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".jpg", ".jpeg":
+		format = "jpeg"
+	case ".png":
+		format = "png"
+	default:
+		format = "png" // default to PNG
+	}
+
+	// Take screenshot
+	data, err := e.page.screenshotElement(e, ScreenshotOptions{
+		Format: format,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to take element screenshot: %w", err)
+	}
+
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write element screenshot to file %s: %w", filePath, err)
+	}
+
+	return nil
 }
 
 // Helper function to check if file exists
