@@ -511,21 +511,13 @@ func (p *Page) ScreenshotToFile(filePath string, options ...ScreenshotOptions) e
 		opts = options[0]
 	} else {
 		opts = ScreenshotOptions{
-			Format: "png",
+			Format: defaultScreenshotFormat,
 		}
 	}
 
 	// Auto-detect format from file extension if not specified
 	if opts.Format == "" {
-		ext := strings.ToLower(filepath.Ext(filePath))
-		switch ext {
-		case ".jpg", ".jpeg":
-			opts.Format = "jpeg"
-		case ".png":
-			opts.Format = "png"
-		default:
-			opts.Format = "png" // default to PNG
-		}
+		opts.Format = detectFormatFromExtension(filePath)
 	}
 
 	// Take screenshot
@@ -534,18 +526,8 @@ func (p *Page) ScreenshotToFile(filePath string, options ...ScreenshotOptions) e
 		return fmt.Errorf("failed to take screenshot: %w", err)
 	}
 
-	// Create directory if it doesn't exist
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	// Write to file
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write screenshot to file %s: %w", filePath, err)
-	}
-
-	return nil
+	// Write screenshot to file using helper
+	return writeScreenshotToFile(filePath, data)
 }
 
 // ScreenshotSimpleToFile captures page screenshot with default options and saves to file
@@ -798,16 +780,7 @@ func (e Element) ScreenshotToFile(filePath string) error {
 	}
 
 	// Auto-detect format from file extension
-	var format string
-	ext := strings.ToLower(filepath.Ext(filePath))
-	switch ext {
-	case ".jpg", ".jpeg":
-		format = "jpeg"
-	case ".png":
-		format = "png"
-	default:
-		format = "png" // default to PNG
-	}
+	format := detectFormatFromExtension(filePath)
 
 	// Take screenshot
 	data, err := e.page.screenshotElement(e, ScreenshotOptions{
@@ -817,18 +790,8 @@ func (e Element) ScreenshotToFile(filePath string) error {
 		return fmt.Errorf("failed to take element screenshot: %w", err)
 	}
 
-	// Create directory if it doesn't exist
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	// Write to file
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write element screenshot to file %s: %w", filePath, err)
-	}
-
-	return nil
+	// Write screenshot to file using helper
+	return writeScreenshotToFile(filePath, data)
 }
 
 // Helper function to check if file exists
@@ -934,4 +897,37 @@ func (p *Page) screenshotElement(element Element, options ScreenshotOptions) ([]
 	}
 
 	return result.Data, nil
+}
+
+// Helper functions for ScreenshotToFile methods
+
+const defaultScreenshotFormat = "png"
+
+// detectFormatFromExtension detects image format from file extension
+func detectFormatFromExtension(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	case ".png":
+		return "png"
+	default:
+		return defaultScreenshotFormat
+	}
+}
+
+// writeScreenshotToFile creates directory and writes screenshot data to file
+func writeScreenshotToFile(filePath string, data []byte) error {
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write screenshot to file %s: %w", filePath, err)
+	}
+
+	return nil
 }
