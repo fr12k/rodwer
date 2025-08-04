@@ -2,6 +2,8 @@ package rodwer
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -334,6 +336,43 @@ func (s *FrameworkTestSuite) TestScreenshotCapture() {
 			s.Greater(len(data), 100, "Screenshot should contain meaningful data")
 		})
 	}
+}
+
+func (s *FrameworkTestSuite) TestScreenshotToFile() {
+	page, err := s.browser.NewPage()
+	s.Require().NoError(err)
+	defer page.Close()
+
+	err = page.Navigate("data:text/html,<html><body><h1>ScreenshotToFile Test</h1><p id='test-element'>Test Element</p></body></html>")
+	s.Require().NoError(err)
+
+	// Test page screenshot to file with default options
+	testDir := "test_screenshots"
+	defer os.RemoveAll(testDir) // Clean up after test
+
+	// Test ScreenshotSimpleToFile
+	err = page.ScreenshotSimpleToFile(filepath.Join(testDir, "simple_test.png"))
+	s.Require().NoError(err)
+	s.FileExists(filepath.Join(testDir, "simple_test.png"))
+
+	// Test ScreenshotToFile with custom options
+	err = page.ScreenshotToFile(filepath.Join(testDir, "custom_test.jpg"), ScreenshotOptions{
+		Format:  "jpeg",
+		Quality: 80,
+	})
+	s.Require().NoError(err)
+	s.FileExists(filepath.Join(testDir, "custom_test.jpg"))
+
+	// Test element screenshot to file
+	element, err := page.Element("#test-element")
+	s.Require().NoError(err)
+	err = element.ScreenshotToFile(filepath.Join(testDir, "element_test.png"))
+	s.Require().NoError(err)
+	s.FileExists(filepath.Join(testDir, "element_test.png"))
+
+	// Test error cases
+	err = page.ScreenshotToFile("", ScreenshotOptions{})
+	s.Error(err, "Should error with empty file path")
 }
 
 func (s *FrameworkTestSuite) TestCoverageCollection() {

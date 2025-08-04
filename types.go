@@ -3,6 +3,7 @@ package rodwer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -498,6 +499,42 @@ func (p *Page) ScreenshotSimple() ([]byte, error) {
 	})
 }
 
+// ScreenshotToFile captures page screenshot and saves directly to file
+func (p *Page) ScreenshotToFile(filePath string, options ...ScreenshotOptions) error {
+	if filePath == "" {
+		return fmt.Errorf("file path cannot be empty")
+	}
+
+	// Use default options if none provided
+	var opts ScreenshotOptions
+	if len(options) > 0 {
+		opts = options[0]
+	} else {
+		opts = ScreenshotOptions{
+			Format: defaultScreenshotFormat,
+		}
+	}
+
+	// Auto-detect format from file extension if not specified
+	if opts.Format == "" {
+		opts.Format = detectFormatFromExtension(filePath)
+	}
+
+	// Take screenshot
+	data, err := p.Screenshot(opts)
+	if err != nil {
+		return fmt.Errorf("failed to take screenshot: %w", err)
+	}
+
+	// Write screenshot to file using helper
+	return writeScreenshotToFile(filePath, data)
+}
+
+// ScreenshotSimpleToFile captures page screenshot with default options and saves to file
+func (p *Page) ScreenshotSimpleToFile(filePath string) error {
+	return p.ScreenshotToFile(filePath)
+}
+
 // StartJSCoverage starts JavaScript coverage collection
 func (p *Page) StartJSCoverage() error {
 	p.mu.RLock()
@@ -732,9 +769,42 @@ func (e Element) Screenshot() ([]byte, error) {
 	})
 }
 
+// ScreenshotToFile takes a screenshot of the element and saves directly to file
+func (e Element) ScreenshotToFile(filePath string) error {
+	if filePath == "" {
+		return fmt.Errorf("file path cannot be empty")
+	}
+
+	if e.element == nil {
+		return fmt.Errorf("element is nil")
+	}
+
+	// Check if page is closed
+	e.page.mu.RLock()
+	closed := e.page.closed
+	e.page.mu.RUnlock()
+	if closed {
+		return fmt.Errorf("page is closed")
+	}
+
+	// Auto-detect format from file extension
+	format := detectFormatFromExtension(filePath)
+
+	// Take screenshot
+	data, err := e.page.screenshotElement(e, ScreenshotOptions{
+		Format: format,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to take element screenshot: %w", err)
+	}
+
+	// Write screenshot to file using helper
+	return writeScreenshotToFile(filePath, data)
+}
+
 // Helper function to check if file exists
 func fileExists(filename string) bool {
-	_, err := filepath.Abs(filename)
+	_, err := os.Stat(filename)
 	return err == nil
 }
 
@@ -835,4 +905,37 @@ func (p *Page) screenshotElement(element Element, options ScreenshotOptions) ([]
 	}
 
 	return result.Data, nil
+}
+
+// Helper functions for ScreenshotToFile methods
+
+const defaultScreenshotFormat = "png"
+
+// detectFormatFromExtension detects image format from file extension
+func detectFormatFromExtension(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	case ".png":
+		return "png"
+	default:
+		return defaultScreenshotFormat
+	}
+}
+
+// writeScreenshotToFile creates directory and writes screenshot data to file
+func writeScreenshotToFile(filePath string, data []byte) error {
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write screenshot to file %s: %w", filePath, err)
+	}
+
+	return nil
 }
