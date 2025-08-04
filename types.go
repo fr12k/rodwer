@@ -779,6 +779,14 @@ func (e Element) ScreenshotToFile(filePath string) error {
 		return fmt.Errorf("element is nil")
 	}
 
+	// Check if page is closed
+	e.page.mu.RLock()
+	closed := e.page.closed
+	e.page.mu.RUnlock()
+	if closed {
+		return fmt.Errorf("page is closed")
+	}
+
 	// Auto-detect format from file extension
 	format := detectFormatFromExtension(filePath)
 
@@ -796,7 +804,7 @@ func (e Element) ScreenshotToFile(filePath string) error {
 
 // Helper function to check if file exists
 func fileExists(filename string) bool {
-	_, err := filepath.Abs(filename)
+	_, err := os.Stat(filename)
 	return err == nil
 }
 
@@ -920,12 +928,12 @@ func detectFormatFromExtension(filePath string) string {
 func writeScreenshotToFile(filePath string, data []byte) error {
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
 	// Write to file
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	if err := os.WriteFile(filePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write screenshot to file %s: %w", filePath, err)
 	}
 
