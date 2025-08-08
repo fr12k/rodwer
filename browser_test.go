@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -419,56 +418,73 @@ func TestCoverageReport(t *testing.T) {
 	// Get the test server URL
 	testServerURL := testServer.URL + "/roadmap"
 
-	// Launch browser with --no-sandbox
-	path := launcher.New().
-		Headless(true).
-		Leakless(false). // set to false to avoid SIGTRAP crash in CI
-		NoSandbox(true). // this sets --no-sandbox
-		MustLaunch()
+	// Create browser using Rodwer API
+	browserOpts := BrowserOptions{
+		Headless:  false,
+		NoSandbox: true,
+	}
 
-	browser := rod.New().ControlURL(path).MustConnect()
-	defer browser.MustClose()
+	browser, err := NewBrowser(browserOpts)
+	require.NoError(t, err)
+	defer browser.Close()
 
-	page := browser.MustPage(testServerURL)
-	defer page.MustClose()
+	// Create new page
+	page, err := browser.NewPage()
+	require.NoError(t, err)
+	defer page.Close()
 
-	// Enable Debugger and Profiler
-	must(proto.DebuggerEnable{}.Call(page))
-	must(nil, proto.ProfilerEnable{}.Call(page))
-	must(proto.ProfilerStartPreciseCoverage{
-		CallCount: true,
-		Detailed:  true,
-	}.Call(page))
+	// Start JavaScript coverage collection
+	require.NoError(t, page.StartJSCoverage())
 
-	time.Sleep(1 * time.Second)
+	// Navigate to test page
+	require.NoError(t, page.Navigate(testServerURL))
 
-	// Screenshots
-	page.MustScreenshot(screenshot1)
+	// Give DOMContentLoaded event a moment to fire and execute calculateProgress()
+	t.Logf("Allowing DOMContentLoaded event to execute...")
+	time.Sleep(200 * time.Millisecond)
+
+	// Take screenshot before interaction
+	err = page.ScreenshotToFile(screenshot1)
+	require.NoError(t, err)
 
 	// Click the button and verify it changes
-	btn := page.MustElement("#copy-all-btn")
-	btn.MustClick()
+	btn, err := page.Element("#copy-all-btn")
+	require.NoError(t, err)
+	require.NoError(t, btn.Click())
 
-	// Wait for JavaScript to execute and verify the button text changed
-	page.MustWaitStable()
+	// Wait a bit for async JavaScript (setTimeout) to execute
+	time.Sleep(200 * time.Millisecond)
 
-	// Verify button text changed (more robust approach)
-	btnText := btn.MustText()
+	// Verify button text changed
+	btnText, err := btn.Text()
+	require.NoError(t, err)
 	require.Contains(t, btnText, "Copied", "Button text should contain 'Copied' after click")
 
-	page.MustScreenshot(screenshot2)
-
-	// JS Coverage snapshot
-	result, err := proto.ProfilerTakePreciseCoverage{}.Call(page)
+	// Take screenshot after interaction
+	err = page.ScreenshotToFile(screenshot2)
 	require.NoError(t, err)
-	_ = proto.ProfilerStopPreciseCoverage{}.Call(page)
 
-	b, _ := json.MarshalIndent(result.Result, "", "  ")
+	// Stop JavaScript coverage with async detection (using quick options to minimize timeout issues)
+	coverageOptions := DefaultCoverageOptions()
+	coverageOptions.EnableDebugLogs = true // Enable debug logging to see what's captured
+
+	t.Logf("Collecting JavaScript coverage with enhanced async detection...")
+	coverageEntries, err := page.StopJSCoverageWithWait(coverageOptions)
+	require.NoError(t, err)
+
+	t.Logf("Coverage collection complete: %d entries captured", len(coverageEntries))
+
+	// Convert to old format for existing report generation
+	result := convertToOldCoverageFormat(coverageEntries)
+
+	// Save raw coverage data
+	b, _ := json.MarshalIndent(result, "", "  ")
 	require.NoError(t, os.WriteFile(jsCoverage, b, 0644))
 
-	generateJSReport(t, page, result.Result)
+	// Generate coverage report using existing function
+	generateJSReportFromEntries(t, coverageEntries)
 
-	jsPct := computeJavaScriptCoverage(result.Result)
+	jsPct := computeJavaScriptCoverageFromEntries(coverageEntries)
 	goPct := computeGoCoveragePercent(t)
 
 	generateCoverageIndex(goPct, jsPct)
@@ -483,6 +499,208 @@ func must(_ any, err error) {
 	}
 }
 
+// convertToOldCoverageFormat converts new CoverageEntry to old format for compatibility
+func convertToOldCoverageFormat(entries []CoverageEntry) []*proto.ProfilerScriptCoverage {
+	var result []*proto.ProfilerScriptCoverage
+
+	for i, entry := range entries {
+		scriptCov := &proto.ProfilerScriptCoverage{
+			ScriptID: proto.RuntimeScriptID(fmt.Sprintf("script-%d", i)),
+			URL:      entry.URL,
+		}
+
+		// Convert ranges to ProfilerFunctionCoverage format
+		if len(entry.Ranges) > 0 {
+			functions := make([]*proto.ProfilerFunctionCoverage, 1)
+			functions[0] = &proto.ProfilerFunctionCoverage{
+				FunctionName: "",
+				Ranges:       make([]*proto.ProfilerCoverageRange, 0),
+			}
+
+			for _, r := range entry.Ranges {
+				functions[0].Ranges = append(functions[0].Ranges, &proto.ProfilerCoverageRange{
+					StartOffset: r.Start,
+					EndOffset:   r.End,
+					Count:       r.Count,
+				})
+			}
+			scriptCov.Functions = functions
+		}
+
+		result = append(result, scriptCov)
+	}
+
+	return result
+}
+
+// generateJSReportFromEntries generates report from new CoverageEntry format
+func generateJSReportFromEntries(t *testing.T, entries []CoverageEntry) {
+	// Convert to old format and use existing function
+	oldFormat := convertToOldCoverageFormat(entries)
+
+	// Create mapping from script index to source for the enhanced report
+	indexToSource := make(map[int]string)
+	for i, entry := range entries {
+		indexToSource[i] = entry.Source
+	}
+
+	// Use the real Istanbul.js-style report generation with pre-collected sources
+	generateJSReportWithPreCollectedSources(t, oldFormat, indexToSource)
+}
+
+// computeJavaScriptCoverageFromEntries computes coverage percentage from new format
+func computeJavaScriptCoverageFromEntries(entries []CoverageEntry) float64 {
+	totalBytes := 0
+	coveredBytes := 0
+
+	for _, entry := range entries {
+		if entry.Source == "" {
+			continue
+		}
+
+		totalBytes += len(entry.Source)
+
+		// Calculate covered bytes from ranges
+		covered := make([]bool, len(entry.Source))
+		for _, r := range entry.Ranges {
+			if r.Count > 0 && r.Start >= 0 && r.End <= len(entry.Source) {
+				for i := r.Start; i < r.End; i++ {
+					covered[i] = true
+				}
+			}
+		}
+
+		for _, c := range covered {
+			if c {
+				coveredBytes++
+			}
+		}
+	}
+
+	if totalBytes == 0 {
+		return 0
+	}
+
+	return float64(coveredBytes) / float64(totalBytes) * 100
+}
+
+// generateJSReportWithPreCollectedSources generates Istanbul.js-style report with pre-collected source data
+func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.ProfilerScriptCoverage, indexToSource map[int]string) {
+	// Use production filtering options for strictest application-only filtering
+	filterOptions := getProductionFilterOptions()
+
+	entries := make([]FileEntry, 0, len(raw))
+	var totalMetrics CoverageMetrics
+	var filterStats FilteringStats
+
+	filterStats.TotalScripts = len(raw)
+	filterStats.FilterReasons = make(map[string]int)
+
+	// Group scripts by URL to properly aggregate functions
+	urlToScripts := make(map[string][]*proto.ProfilerScriptCoverage)
+	urlToSources := make(map[string]string)
+
+	for i, r := range raw {
+		// Get pre-collected script source instead of fetching via Rod
+		scriptSource := indexToSource[i]
+		if scriptSource == "" {
+			filterStats.FilterReasons["source_unavailable"]++
+			continue
+		}
+
+		// Apply filtering logic
+		isApp, reason := isApplicationScript(r, scriptSource, filterOptions)
+		filterStats.FilterReasons[reason]++
+
+		if !isApp {
+			continue // Skip this script
+		}
+
+		// Group by URL for proper function aggregation
+		url := r.URL
+		if url == "" {
+			url = fmt.Sprintf("Script_%s", r.ScriptID)
+		}
+
+		urlToScripts[url] = append(urlToScripts[url], r)
+		if urlToSources[url] == "" || len(scriptSource) > len(urlToSources[url]) {
+			// Use the longest source (most complete)
+			urlToSources[url] = scriptSource
+		}
+	}
+
+	// Process each URL group
+	for url, scripts := range urlToScripts {
+		// Aggregate all functions and ranges for this URL
+		var allFunctions []*proto.ProfilerFunctionCoverage
+		var allRanges []*proto.ProfilerCoverageRange
+
+		for _, script := range scripts {
+			if script.Functions != nil {
+				allFunctions = append(allFunctions, script.Functions...)
+			}
+		}
+
+		// Collect all ranges from all functions
+		for _, function := range allFunctions {
+			if function.Ranges != nil {
+				allRanges = append(allRanges, function.Ranges...)
+			}
+		}
+
+		source := urlToSources[url]
+		lines := strings.Split(source, "\n")
+
+		// Calculate metrics for this file
+		metrics := calculateCoverageMetrics(source, allRanges, allFunctions)
+
+		entry := FileEntry{
+			ScriptID: scripts[0].ScriptID, // Use first script ID as representative
+			URL:      url,
+			Source:   source,
+			Lines:    lines,
+			Ranges:   allRanges,
+			Metrics:  metrics,
+		}
+
+		entries = append(entries, entry)
+
+		// Add to total metrics
+		totalMetrics.Statements.Total += metrics.Statements.Total
+		totalMetrics.Statements.Covered += metrics.Statements.Covered
+		totalMetrics.Functions.Total += metrics.Functions.Total
+		totalMetrics.Functions.Covered += metrics.Functions.Covered
+		totalMetrics.Lines.Total += metrics.Lines.Total
+		totalMetrics.Lines.Covered += metrics.Lines.Covered
+	}
+
+	// Calculate final filtering statistics
+	filterStats.ApplicationScripts = len(entries)
+	filterStats.FilteredOut = filterStats.TotalScripts - filterStats.ApplicationScripts
+
+	// Calculate total percentages
+	if totalMetrics.Statements.Total > 0 {
+		totalMetrics.Statements.Pct = float64(totalMetrics.Statements.Covered) / float64(totalMetrics.Statements.Total) * 100
+	}
+	if totalMetrics.Functions.Total > 0 {
+		totalMetrics.Functions.Pct = float64(totalMetrics.Functions.Covered) / float64(totalMetrics.Functions.Total) * 100
+	}
+	if totalMetrics.Lines.Total > 0 {
+		totalMetrics.Lines.Pct = float64(totalMetrics.Lines.Covered) / float64(totalMetrics.Lines.Total) * 100
+	}
+
+	sort.Slice(entries, func(i, j int) bool { return entries[i].URL < entries[j].URL })
+
+	html := generateIstanbulStyleHTML(entries, totalMetrics, filterStats)
+
+	jsHTML := "coverage/js-coverage.html"
+	_ = os.WriteFile(jsHTML, []byte(html), 0644)
+
+	t.Logf("JavaScript coverage report written to %s", jsHTML)
+	t.Logf("Coverage Summary - Statements: %.1f%%, Functions: %.1f%%, Lines: %.1f%%",
+		totalMetrics.Statements.Pct, totalMetrics.Functions.Pct, totalMetrics.Lines.Pct)
+}
+
 type OldCoverageEntry struct {
 	ScriptID proto.RuntimeScriptID
 	URL      string
@@ -490,70 +708,1105 @@ type OldCoverageEntry struct {
 	Ranges   []*proto.ProfilerCoverageRange
 }
 
+type CoverageMetrics struct {
+	Statements CoverageStat `json:"statements"`
+	Branches   CoverageStat `json:"branches"`
+	Functions  CoverageStat `json:"functions"`
+	Lines      CoverageStat `json:"lines"`
+}
+
+type CoverageStat struct {
+	Total   int     `json:"total"`
+	Covered int     `json:"covered"`
+	Skipped int     `json:"skipped"`
+	Pct     float64 `json:"pct"`
+}
+
+type CoverageFilterOptions struct {
+	ExcludeEmptyURLs                bool     // Default: true - exclude scripts with empty URLs
+	ExcludeDevTools                 bool     // Default: true - exclude automation framework scripts
+	ExcludeBrowserExt               bool     // Default: true - exclude browser extension scripts
+	ExcludeFrameworkTools           bool     // Default: true - exclude modern framework development tools
+	ExcludeCDNLibraries             bool     // Default: true - exclude CDN-hosted libraries
+	ExcludeMinifiedCode             bool     // Default: true - exclude minified/generated code
+	ExcludeTestFrameworks           bool     // Default: true - exclude test framework code
+	ExcludeHighDensityInlineScripts bool     // Default: true - exclude inline scripts with high statement density
+	ExcludeInlineSystemScripts      bool     // Default: true - exclude browser-generated inline scripts
+	MinScriptSize                   int      // Default: 30 - minimum script size in characters
+	MaxStatementsPerLine            int      // Default: 50 - maximum statements per line before considering minified
+	CustomExcludePatterns           []string // User-defined exclusion patterns
+	CustomIncludePatterns           []string // Force include patterns (overrides exclusions)
+}
+
+type FilteringStats struct {
+	TotalScripts         int
+	ApplicationScripts   int
+	FilteredOut          int
+	FilterReasons        map[string]int
+	ProcessingTimeMs     int64   // Total processing time in milliseconds
+	AverageTimePerScript float64 // Average time per script in milliseconds
+}
+
+type FileEntry struct {
+	ScriptID proto.RuntimeScriptID
+	URL      string
+	Source   string
+	Lines    []string
+	Ranges   []*proto.ProfilerCoverageRange
+	Metrics  CoverageMetrics
+}
+
+// getDefaultFilterOptions returns sensible default filtering options
+func getDefaultFilterOptions() CoverageFilterOptions {
+	return CoverageFilterOptions{
+		ExcludeEmptyURLs:                true,
+		ExcludeDevTools:                 true,
+		ExcludeBrowserExt:               true,
+		ExcludeFrameworkTools:           true,
+		ExcludeCDNLibraries:             true,
+		ExcludeMinifiedCode:             true,
+		ExcludeTestFrameworks:           true,
+		ExcludeHighDensityInlineScripts: true,
+		ExcludeInlineSystemScripts:      true,
+		MinScriptSize:                   30,
+		MaxStatementsPerLine:            50,
+		CustomExcludePatterns:           []string{},
+		CustomIncludePatterns:           []string{},
+	}
+}
+
+// getDevelopmentFilterOptions returns more permissive options for development
+func getDevelopmentFilterOptions() CoverageFilterOptions {
+	return CoverageFilterOptions{
+		ExcludeEmptyURLs:                true,
+		ExcludeDevTools:                 true,
+		ExcludeBrowserExt:               true,
+		ExcludeFrameworkTools:           false, // Include for debugging
+		ExcludeCDNLibraries:             true,
+		ExcludeMinifiedCode:             false, // Include for debugging
+		ExcludeTestFrameworks:           false, // Include test code
+		ExcludeHighDensityInlineScripts: false, // Include for analysis
+		ExcludeInlineSystemScripts:      true,  // Still exclude system scripts
+		MinScriptSize:                   10,    // More permissive
+		MaxStatementsPerLine:            100,   // More permissive threshold
+		CustomExcludePatterns:           []string{},
+		CustomIncludePatterns:           []string{},
+	}
+}
+
+// getProductionFilterOptions returns strict filtering for production analysis
+func getProductionFilterOptions() CoverageFilterOptions {
+	return CoverageFilterOptions{
+		ExcludeEmptyURLs:                true,
+		ExcludeDevTools:                 true,
+		ExcludeBrowserExt:               true,
+		ExcludeFrameworkTools:           true,
+		ExcludeCDNLibraries:             true,
+		ExcludeMinifiedCode:             true,
+		ExcludeTestFrameworks:           true,
+		ExcludeHighDensityInlineScripts: true,
+		ExcludeInlineSystemScripts:      true,
+		MinScriptSize:                   50, // Stricter minimum
+		MaxStatementsPerLine:            5,  // Ultra-strict threshold for production
+		CustomExcludePatterns:           []string{},
+		CustomIncludePatterns:           []string{},
+	}
+}
+
+// isApplicationScript determines if a script should be included in coverage reports
+func isApplicationScript(scriptCoverage *proto.ProfilerScriptCoverage, source string, options CoverageFilterOptions) (bool, string) {
+	// Check custom include patterns first (they override all exclusions)
+	for _, pattern := range options.CustomIncludePatterns {
+		if strings.Contains(strings.ToLower(scriptCoverage.URL), strings.ToLower(pattern)) ||
+			strings.Contains(strings.ToLower(source), strings.ToLower(pattern)) {
+			return true, "custom_include"
+		}
+	}
+
+	// 1. Universal inline script blocking - exclude ALL inline-script-* patterns
+	if strings.HasPrefix(scriptCoverage.URL, "inline-script-") {
+		return false, "inline_script_blocked"
+	}
+
+	// 2. Exclude scripts with empty URLs (browser internals)
+	if options.ExcludeEmptyURLs && scriptCoverage.URL == "" {
+		return false, "empty_url"
+	}
+
+	// 3. Exclude browser extension scripts
+	if options.ExcludeBrowserExt && (strings.Contains(scriptCoverage.URL, "chrome-extension://") ||
+		strings.Contains(scriptCoverage.URL, "moz-extension://") ||
+		strings.Contains(scriptCoverage.URL, "safari-extension://")) {
+		return false, "browser_extension"
+	}
+
+	// 4. Exclude DevTools/automation framework specific function signatures
+	if options.ExcludeDevTools {
+		devToolsPatterns := []string{
+			"functions.selectable", "functions.element", "f.toString",
+			"__coverage__", "webdriver", "puppeteer", "playwright", "rod",
+			"chromedriver", "seleniumwebdriver",
+		}
+		sourceLower := strings.ToLower(source)
+		for _, pattern := range devToolsPatterns {
+			if strings.Contains(sourceLower, strings.ToLower(pattern)) {
+				return false, "devtools_framework"
+			}
+		}
+	}
+
+	// 5. Exclude very small scripts (likely browser internals)
+	if len(strings.TrimSpace(source)) < options.MinScriptSize {
+		return false, "too_small"
+	}
+
+	// 6. Exclude known browser internal patterns
+	trimmedSource := strings.TrimSpace(source)
+	browserInternalPatterns := []string{
+		"console.clear()", "console.time()", "console.group()",
+		"console.clear", "console.time", "console.group",
+	}
+	for _, pattern := range browserInternalPatterns {
+		if trimmedSource == pattern || trimmedSource == pattern+";" {
+			return false, "browser_internal"
+		}
+	}
+
+	// 7. Exclude modern framework development tools
+	if options.ExcludeFrameworkTools {
+		frameworkToolPatterns := []string{
+			// React DevTools and internals
+			"__REACT_DEVTOOLS_GLOBAL_HOOK__", "react-devtools", "ReactDevTools",
+			"__REACT_HOT_LOADER__", "react-hot-loader", "webpack-hot-middleware",
+			// Vue DevTools
+			"__VUE_DEVTOOLS_GLOBAL_HOOK__", "vue-devtools", "VueDevTools",
+			"vue-hot-reload-api", "__VUE_HMR_RUNTIME__",
+			// Angular DevTools
+			"ng.probe", "ng.coreTokens", "getAllAngularRootElements",
+			"@angular/core/bundles", "zone.js/bundles",
+			// Build tool artifacts
+			"webpack://", "webpackBootstrap", "__webpack_require__",
+			"(function(module, exports, __webpack_require__)",
+			"parcelRequire", "rollupPluginBabelHelpers",
+			// Source map utilities
+			"//# sourceMappingURL=", "//# sourceURL=",
+		}
+		sourceLower := strings.ToLower(source)
+		urlLower := strings.ToLower(scriptCoverage.URL)
+		for _, pattern := range frameworkToolPatterns {
+			if strings.Contains(sourceLower, strings.ToLower(pattern)) ||
+				strings.Contains(urlLower, strings.ToLower(pattern)) {
+				return false, "framework_tools"
+			}
+		}
+	}
+
+	// 8. Exclude CDN-hosted libraries
+	if options.ExcludeCDNLibraries {
+		cdnPatterns := []string{
+			"cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com",
+			"ajax.googleapis.com", "code.jquery.com", "stackpath.bootstrapcdn.com",
+			"maxcdn.bootstrapcdn.com", "use.fontawesome.com", "fonts.googleapis.com",
+			"polyfill.io", "cdn.polyfill.io", "cloudflare.com/ajax/libs",
+		}
+		urlLower := strings.ToLower(scriptCoverage.URL)
+		for _, pattern := range cdnPatterns {
+			if strings.Contains(urlLower, pattern) {
+				return false, "cdn_library"
+			}
+		}
+	}
+
+	// 9. Exclude minified/generated code detection
+	if options.ExcludeMinifiedCode {
+		// Check for minified indicators in URL
+		urlLower := strings.ToLower(scriptCoverage.URL)
+		if strings.Contains(urlLower, ".min.") || strings.Contains(urlLower, "-min.") ||
+			strings.Contains(urlLower, "_min.") || strings.Contains(urlLower, "/min/") {
+			return false, "minified_code"
+		}
+
+		// Check for generated code markers in source
+		sourceLower := strings.ToLower(source)
+		generatedCodeMarkers := []string{
+			"this file was autogenerated", "do not edit", "auto-generated",
+			"generated by webpack", "generated by rollup", "generated by parcel",
+			"compiled by babel", "this is a generated file",
+			"/* eslint-disable */", "/* tslint:disable */",
+		}
+		for _, marker := range generatedCodeMarkers {
+			if strings.Contains(sourceLower, strings.ToLower(marker)) {
+				return false, "generated_code"
+			}
+		}
+
+		// Heuristic: very long lines (>200 chars) with no whitespace often indicate minification
+		lines := strings.Split(source, "\n")
+		for _, line := range lines[:min(5, len(lines))] { // Check first 5 lines
+			trimmed := strings.TrimSpace(line)
+			if len(trimmed) > 200 && !strings.Contains(trimmed, " ") && !strings.HasPrefix(trimmed, "//") {
+				return false, "minified_heuristic"
+			}
+		}
+	}
+
+	// 10. Exclude test framework code
+	if options.ExcludeTestFrameworks {
+		testFrameworkPatterns := []string{
+			// Jest
+			"jest-runtime", "jest.fn()", "expect.extend", "__jest",
+			"describe(", "test(", "it(", "expect(", "beforeEach(", "afterEach(",
+			"jasmine.createSpy", "jasmine.clock", "jest/build/",
+			// Mocha/Chai
+			"mocha.setup", "chai.expect", "chai.assert", "should.js",
+			// Jasmine
+			"jasmine.getEnv()", "jasmine.DEFAULT_TIMEOUT_INTERVAL",
+			// Cypress
+			"cypress/", "cy.visit(", "cy.get(", "cy.click(",
+			// Testing Library
+			"@testing-library/", "render(", "screen.getBy",
+			// QUnit
+			"QUnit.test", "QUnit.module",
+			// Karma
+			"karma.conf", "__karma__",
+		}
+		sourceLower := strings.ToLower(source)
+		urlLower := strings.ToLower(scriptCoverage.URL)
+		for _, pattern := range testFrameworkPatterns {
+			if strings.Contains(sourceLower, strings.ToLower(pattern)) ||
+				strings.Contains(urlLower, strings.ToLower(pattern)) {
+				return false, "test_framework"
+			}
+		}
+	}
+
+	// 11. Exclude high-density inline scripts (likely minified)
+	if options.ExcludeHighDensityInlineScripts {
+		// Check if this is an inline script
+		if strings.HasPrefix(scriptCoverage.URL, "inline-script-") ||
+			scriptCoverage.URL == "" ||
+			strings.Contains(strings.ToLower(scriptCoverage.URL), "inline") {
+
+			// Calculate statement density: total statements divided by number of lines
+			lines := strings.Split(source, "\n")
+			nonEmptyLines := 0
+			for _, line := range lines {
+				if strings.TrimSpace(line) != "" {
+					nonEmptyLines++
+				}
+			}
+
+			if nonEmptyLines > 0 {
+				// Count statements using semicolons and common statement patterns
+				statementCount := countJavaScriptStatements(source)
+				statementsPerLine := float64(statementCount) / float64(nonEmptyLines)
+
+				// If statements per line exceeds threshold, likely minified
+				if statementsPerLine > float64(options.MaxStatementsPerLine) {
+					return false, "high_density_inline"
+				}
+			}
+		}
+	}
+
+	// 12. Exclude inline system scripts (browser-generated)
+	if options.ExcludeInlineSystemScripts {
+		// Check if this appears to be a browser-generated inline script
+		if strings.HasPrefix(scriptCoverage.URL, "inline-script-") || scriptCoverage.URL == "" {
+			// Look for system-generated content patterns
+			systemPatterns := []string{
+				// Browser console/devtools generated
+				"console.log", "console.warn", "console.error",
+				"window.chrome", "window.__REACT_DEVTOOLS",
+				"window.__VUE_DEVTOOLS", "window.angular",
+				// Performance monitoring
+				"performance.mark", "performance.measure",
+				"navigation.timing", "window.performance",
+				// Browser automation detection
+				"webdriver", "phantom", "selenium", "puppeteer",
+				// Ad blockers and extensions
+				"adblock", "ublock", "extension",
+			}
+
+			sourceLower := strings.ToLower(source)
+			for _, pattern := range systemPatterns {
+				if strings.Contains(sourceLower, strings.ToLower(pattern)) {
+					return false, "inline_system_script"
+				}
+			}
+
+			// Check for repetitive patterns (common in generated code)
+			if isRepetitiveContent(source) {
+				return false, "inline_system_script"
+			}
+		}
+	}
+
+	// 13. Check custom exclude patterns
+	for _, pattern := range options.CustomExcludePatterns {
+		if strings.Contains(strings.ToLower(scriptCoverage.URL), strings.ToLower(pattern)) ||
+			strings.Contains(strings.ToLower(source), strings.ToLower(pattern)) {
+			return false, "custom_exclude"
+		}
+	}
+
+	return true, "application_script"
+}
+
+// min helper function for slice bounds checking
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// countJavaScriptStatements estimates the number of JavaScript statements in source code
+func countJavaScriptStatements(source string) int {
+	if source == "" {
+		return 0
+	}
+
+	// Remove comments to avoid false positives
+	source = removeJavaScriptComments(source)
+
+	// Count semicolons (primary statement delimiter)
+	semicolonCount := strings.Count(source, ";")
+
+	// Count other statement patterns that might not end with semicolons
+	statementPatterns := []string{
+		"function ", "var ", "let ", "const ", "if ", "for ", "while ",
+		"return ", "throw ", "try ", "catch ", "switch ", "case ",
+		"break", "continue", "class ", "import ", "export ",
+	}
+
+	patternCount := 0
+	sourceLower := strings.ToLower(source)
+	for _, pattern := range statementPatterns {
+		patternCount += strings.Count(sourceLower, pattern)
+	}
+
+	// Use the higher of the two counts as a rough estimate
+	// Semicolons are usually more accurate for minified code
+	if semicolonCount > patternCount {
+		return semicolonCount
+	}
+	return patternCount
+}
+
+// removeJavaScriptComments removes single-line and multi-line comments from JavaScript source
+func removeJavaScriptComments(source string) string {
+	// Remove single-line comments
+	lines := strings.Split(source, "\n")
+	var cleanedLines []string
+
+	for _, line := range lines {
+		// Find // that's not inside a string
+		inString := false
+		escaped := false
+		commentStart := -1
+
+		for i, char := range line {
+			if escaped {
+				escaped = false
+				continue
+			}
+
+			if char == '\\' && inString {
+				escaped = true
+				continue
+			}
+
+			if char == '"' || char == '\'' {
+				inString = !inString
+				continue
+			}
+
+			if !inString && i < len(line)-1 && line[i] == '/' && line[i+1] == '/' {
+				commentStart = i
+				break
+			}
+		}
+
+		if commentStart >= 0 {
+			line = line[:commentStart]
+		}
+		cleanedLines = append(cleanedLines, line)
+	}
+
+	result := strings.Join(cleanedLines, "\n")
+
+	// Remove multi-line comments /* */
+	for {
+		start := strings.Index(result, "/*")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result[start+2:], "*/")
+		if end == -1 {
+			// Unterminated comment, remove from start to end
+			result = result[:start]
+			break
+		}
+		result = result[:start] + result[start+2+end+2:]
+	}
+
+	return result
+}
+
+// isRepetitiveContent checks if content appears to be repetitive/generated
+func isRepetitiveContent(source string) bool {
+	if len(source) < 100 {
+		return false // Too short to analyze
+	}
+
+	// Check for highly repetitive patterns
+	lines := strings.Split(source, "\n")
+	if len(lines) < 3 {
+		return false
+	}
+
+	// Look for identical or very similar lines
+	identicalLines := 0
+	for i := 0; i < len(lines)-1; i++ {
+		line1 := strings.TrimSpace(lines[i])
+		line2 := strings.TrimSpace(lines[i+1])
+
+		if line1 != "" && line1 == line2 {
+			identicalLines++
+		}
+	}
+
+	// If more than 30% of lines are identical to adjacent lines, likely repetitive
+	repetitiveRatio := float64(identicalLines) / float64(len(lines))
+	if repetitiveRatio > 0.6 { // More than 60% repetitive
+		return true
+	}
+
+	// Check for repeated character sequences (common in generated code)
+	for _, pattern := range []string{"...", "===", "!!!", "???", "000", "111"} {
+		if strings.Count(source, pattern) > 10 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// filterApplicationScriptsWithStats filters scripts and returns detailed statistics
+func filterApplicationScriptsWithStats(scripts []*proto.ProfilerScriptCoverage, sources map[int]string, options CoverageFilterOptions) ([]int, FilteringStats) {
+	startTime := time.Now()
+
+	var applicationScripts []int
+	stats := FilteringStats{
+		TotalScripts:  len(scripts),
+		FilterReasons: make(map[string]int),
+	}
+
+	for i, script := range scripts {
+		source := sources[i]
+		if source == "" {
+			stats.FilterReasons["source_unavailable"]++
+			continue
+		}
+
+		isApp, reason := isApplicationScript(script, source, options)
+		stats.FilterReasons[reason]++
+
+		if isApp {
+			applicationScripts = append(applicationScripts, i)
+		}
+	}
+
+	stats.ApplicationScripts = len(applicationScripts)
+	stats.FilteredOut = stats.TotalScripts - stats.ApplicationScripts
+
+	// Calculate timing metrics
+	processingTime := time.Since(startTime)
+	stats.ProcessingTimeMs = processingTime.Nanoseconds() / 1000000
+	if stats.TotalScripts > 0 {
+		stats.AverageTimePerScript = float64(stats.ProcessingTimeMs) / float64(stats.TotalScripts)
+	}
+
+	return applicationScripts, stats
+}
+
 func generateJSReport(t interface{ Fatal(args ...any) }, page *rod.Page, raw []*proto.ProfilerScriptCoverage) {
 	client := page
 
-	entries := make([]OldCoverageEntry, 0, len(raw))
+	// Use production filtering options for strictest application-only filtering
+	filterOptions := getProductionFilterOptions()
+
+	entries := make([]FileEntry, 0, len(raw))
+	var totalMetrics CoverageMetrics
+	var filterStats FilteringStats
+
+	filterStats.TotalScripts = len(raw)
+	filterStats.FilterReasons = make(map[string]int)
+
+	// Group scripts by URL to properly aggregate functions
+	urlToScripts := make(map[string][]*proto.ProfilerScriptCoverage)
+	urlToSources := make(map[string]string)
+
 	for _, r := range raw {
 		srcResp, err := proto.DebuggerGetScriptSource{ScriptID: r.ScriptID}.Call(client)
 		if err != nil || srcResp.ScriptSource == "" {
+			filterStats.FilterReasons["source_unavailable"]++
 			continue
 		}
-		allRanges := []*proto.ProfilerCoverageRange{}
-		for _, fn := range r.Functions {
-			allRanges = append(allRanges, fn.Ranges...)
+
+		// Apply filtering logic
+		isApp, reason := isApplicationScript(r, srcResp.ScriptSource, filterOptions)
+		filterStats.FilterReasons[reason]++
+
+		if !isApp {
+			continue // Skip this script
 		}
-		entries = append(entries, OldCoverageEntry{
-			ScriptID: r.ScriptID,
-			URL:      r.URL,
-			Source:   srcResp.ScriptSource,
-			Ranges:   allRanges,
-		})
+
+		// Group by URL for proper function aggregation
+		url := r.URL
+		if url == "" {
+			url = fmt.Sprintf("Script_%s", r.ScriptID)
+		}
+
+		urlToScripts[url] = append(urlToScripts[url], r)
+		if urlToSources[url] == "" || len(srcResp.ScriptSource) > len(urlToSources[url]) {
+			// Use the longest source (most complete)
+			urlToSources[url] = srcResp.ScriptSource
+		}
 	}
 
-	// Generate HTML
-	sb := &strings.Builder{}
-	sb.WriteString(`<html><head><style>
-    .hit { background: #cfc } .miss { background: #fcc }
-    pre { white-space: pre-wrap; font-family: monospace; }
-</style></head><body>`)
+	// Process each URL group
+	for url, scripts := range urlToScripts {
+		// Aggregate all functions and ranges for this URL
+		var allFunctions []*proto.ProfilerFunctionCoverage
+		var allRanges []*proto.ProfilerCoverageRange
+
+		for _, script := range scripts {
+			allFunctions = append(allFunctions, script.Functions...)
+			for _, fn := range script.Functions {
+				allRanges = append(allRanges, fn.Ranges...)
+			}
+		}
+
+		source := urlToSources[url]
+		lines := strings.Split(source, "\n")
+		metrics := calculateCoverageMetrics(source, allRanges, allFunctions)
+
+		// Use first script's ID for the entry (for display purposes)
+		firstScriptID := scripts[0].ScriptID
+
+		entries = append(entries, FileEntry{
+			ScriptID: firstScriptID,
+			URL:      url,
+			Source:   source,
+			Lines:    lines,
+			Ranges:   allRanges,
+			Metrics:  metrics,
+		})
+
+		// Aggregate total metrics
+		totalMetrics.Statements.Total += metrics.Statements.Total
+		totalMetrics.Statements.Covered += metrics.Statements.Covered
+		totalMetrics.Functions.Total += metrics.Functions.Total
+		totalMetrics.Functions.Covered += metrics.Functions.Covered
+		totalMetrics.Lines.Total += metrics.Lines.Total
+		totalMetrics.Lines.Covered += metrics.Lines.Covered
+	}
+
+	// Calculate final filtering statistics
+	filterStats.ApplicationScripts = len(entries)
+	filterStats.FilteredOut = filterStats.TotalScripts - filterStats.ApplicationScripts
+
+	// Calculate total percentages
+	if totalMetrics.Statements.Total > 0 {
+		totalMetrics.Statements.Pct = float64(totalMetrics.Statements.Covered) / float64(totalMetrics.Statements.Total) * 100
+	}
+	if totalMetrics.Functions.Total > 0 {
+		totalMetrics.Functions.Pct = float64(totalMetrics.Functions.Covered) / float64(totalMetrics.Functions.Total) * 100
+	}
+	if totalMetrics.Lines.Total > 0 {
+		totalMetrics.Lines.Pct = float64(totalMetrics.Lines.Covered) / float64(totalMetrics.Lines.Total) * 100
+	}
+
 	sort.Slice(entries, func(i, j int) bool { return entries[i].URL < entries[j].URL })
 
-	for _, e := range entries {
-		sb.WriteString(fmt.Sprintf("<h2>%s</h2><pre>", e.URL))
-		src := e.Source
-		marks := make([]rune, len(src))
-		for i := range marks {
-			marks[i] = ' '
-		}
-		for _, r := range e.Ranges {
-			flag := 'h'
-			if r.Count == 0 {
-				flag = 'm'
-			}
-			for i := r.StartOffset; i < r.EndOffset && i < len(marks); i++ {
-				marks[i] = flag
-			}
-		}
-		for i, ch := range src {
-			switch marks[i] {
-			case 'h':
-				sb.WriteString("<span class=\"hit\">")
-				sb.WriteRune(ch)
-				sb.WriteString("</span>")
-			case 'm':
-				sb.WriteString("<span class=\"miss\">")
-				sb.WriteRune(ch)
-				sb.WriteString("</span>")
-			default:
-				sb.WriteRune(ch)
+	html := generateIstanbulStyleHTML(entries, totalMetrics, filterStats)
+
+	_ = os.WriteFile(jsHTML, []byte(html), 0644)
+	fmt.Printf("✅ Wrote enhanced JS coverage report (%d application scripts, %d filtered): %s\n",
+		filterStats.ApplicationScripts, filterStats.FilteredOut, jsHTML)
+}
+
+func calculateCoverageMetrics(source string, ranges []*proto.ProfilerCoverageRange, functions []*proto.ProfilerFunctionCoverage) CoverageMetrics {
+	sourceLen := len(source)
+	lines := strings.Split(source, "\n")
+
+	// Create coverage map
+	coverage := make([]bool, sourceLen)
+	for _, r := range ranges {
+		if r.Count > 0 {
+			for i := r.StartOffset; i < r.EndOffset && i < sourceLen; i++ {
+				coverage[i] = true
 			}
 		}
-		sb.WriteString("</pre>")
 	}
 
-	_ = os.WriteFile(jsHTML, []byte(sb.String()), 0644)
-	fmt.Println("✅ Wrote JS coverage:", jsHTML)
+	// Calculate statements coverage (simplified as character-based)
+	coveredChars := 0
+	for _, covered := range coverage {
+		if covered {
+			coveredChars++
+		}
+	}
+
+	// Calculate lines coverage
+	linesCovered := 0
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue // Skip empty lines and comments
+		}
+
+		// Check if any part of this line is covered
+		lineStart := 0
+		for j := 0; j < i; j++ {
+			lineStart += len(lines[j]) + 1 // +1 for newline
+		}
+		lineEnd := lineStart + len(line)
+
+		lineCovered := false
+		for k := lineStart; k < lineEnd && k < len(coverage); k++ {
+			if coverage[k] {
+				lineCovered = true
+				break
+			}
+		}
+		if lineCovered {
+			linesCovered++
+		}
+	}
+
+	executableLines := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "//") {
+			executableLines++
+		}
+	}
+
+	// Functions coverage (count each function individually)
+	functionsCovered := 0
+	functionCount := len(functions)
+
+	for _, fn := range functions {
+		// Check if this function has any covered ranges
+		hasCoverage := false
+		for _, r := range fn.Ranges {
+			if r.Count > 0 {
+				hasCoverage = true
+				break
+			}
+		}
+		if hasCoverage {
+			functionsCovered++
+		}
+	}
+
+	return CoverageMetrics{
+		Statements: CoverageStat{
+			Total:   sourceLen,
+			Covered: coveredChars,
+			Pct:     calculatePct(coveredChars, sourceLen),
+		},
+		Functions: CoverageStat{
+			Total:   functionCount,
+			Covered: functionsCovered,
+			Pct:     calculatePct(functionsCovered, functionCount),
+		},
+		Lines: CoverageStat{
+			Total:   executableLines,
+			Covered: linesCovered,
+			Pct:     calculatePct(linesCovered, executableLines),
+		},
+	}
+}
+
+func calculatePct(covered, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(covered) / float64(total) * 100
+}
+
+func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics, filterStats FilteringStats) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JavaScript Coverage Report</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <style>
+        .coverage-high { background-color: #d4edda; }
+        .coverage-medium { background-color: #fff3cd; }
+        .coverage-low { background-color: #f8d7da; }
+        .line-covered { background-color: #d4edda; }
+        .line-uncovered { background-color: #f8d7da; }
+        .line-number { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">JavaScript Coverage Report</h1>
+            <p class="text-gray-600">Generated on %s</p>
+            <div class="mt-3 flex flex-wrap gap-4 text-sm">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                    📁 %d Application Scripts
+                </span>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                    🚫 %d Scripts Filtered
+                </span>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                    📊 %d Total Scripts Analyzed
+                </span>
+            </div>
+        </div>
+
+        <!-- Coverage Summary -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            %s
+        </div>
+
+        <!-- Filtering Statistics -->
+        %s
+
+        <!-- File List -->
+        <div class="bg-white rounded-lg shadow-md mb-8">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-xl font-semibold text-gray-900">File Coverage</h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">File</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Statements</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Functions</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lines</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        %s
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- File Details -->
+        %s
+    </div>
+
+    <script>
+        function toggleFile(fileId) {
+            const element = document.getElementById(fileId);
+            element.classList.toggle('hidden');
+        }
+        
+        // Initialize syntax highlighting
+        Prism.highlightAll();
+    </script>
+</body>
+</html>`,
+		time.Now().Format("2006-01-02 15:04:05"),
+		filterStats.ApplicationScripts,
+		filterStats.FilteredOut,
+		filterStats.TotalScripts,
+		generateSummaryCards(totalMetrics),
+		generateFilteringStats(filterStats),
+		generateFileTable(entries),
+		generateFileDetails(entries))
+}
+
+func generateFilteringStats(stats FilteringStats) string {
+	if len(stats.FilterReasons) == 0 {
+		return ""
+	}
+
+	var reasonsHTML strings.Builder
+	reasonsHTML.WriteString(`
+        <div class="bg-white rounded-lg shadow-md mb-8">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-xl font-semibold text-gray-900 flex items-center">
+                    🔍 Filtering Statistics
+                    <span class="ml-2 text-sm font-normal text-gray-500">
+                        (Processing time: ` + fmt.Sprintf("%.1fms", float64(stats.ProcessingTimeMs)) + `, avg: ` + fmt.Sprintf("%.2fms", stats.AverageTimePerScript) + ` per script)
+                    </span>
+                </h2>
+            </div>
+            <div class="p-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">`)
+
+	// Sort filter reasons by count for better display
+	type reasonCount struct {
+		Reason string
+		Count  int
+	}
+	var reasons []reasonCount
+	for reason, count := range stats.FilterReasons {
+		reasons = append(reasons, reasonCount{Reason: reason, Count: count})
+	}
+	sort.Slice(reasons, func(i, j int) bool { return reasons[i].Count > reasons[j].Count })
+
+	for _, rc := range reasons {
+		icon, description := getFilterReasonDetails(rc.Reason)
+		percentage := float64(rc.Count) / float64(stats.TotalScripts) * 100
+		reasonsHTML.WriteString(fmt.Sprintf(`
+                    <div class="bg-gray-50 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm font-medium text-gray-700">%s %s</span>
+                            <span class="text-lg font-bold text-gray-900">%d</span>
+                        </div>
+                        <div class="text-xs text-gray-500 mb-2">%.1f%% of scripts</div>
+                        <div class="bg-gray-200 rounded-full h-2">
+                            <div class="bg-blue-600 h-2 rounded-full" style="width: %.1f%%"></div>
+                        </div>
+                    </div>`, icon, description, rc.Count, percentage, percentage))
+	}
+
+	reasonsHTML.WriteString(`
+                </div>
+            </div>
+        </div>`)
+
+	return reasonsHTML.String()
+}
+
+func getFilterReasonDetails(reason string) (string, string) {
+	switch reason {
+	case "application_script":
+		return "✅", "Application Scripts"
+	case "empty_url":
+		return "🚫", "Empty URLs (Browser Internals)"
+	case "browser_extension":
+		return "🧩", "Browser Extensions"
+	case "devtools_framework":
+		return "🔧", "DevTools & Automation"
+	case "framework_tools":
+		return "⚛️", "Framework Development Tools"
+	case "cdn_library":
+		return "🌐", "CDN Libraries"
+	case "minified_code":
+		return "📦", "Minified Code"
+	case "generated_code":
+		return "🤖", "Auto-Generated Code"
+	case "minified_heuristic":
+		return "🔍", "Minified (Heuristic)"
+	case "test_framework":
+		return "🧪", "Test Frameworks"
+	case "browser_internal":
+		return "🔒", "Browser Internal Scripts"
+	case "too_small":
+		return "📏", "Scripts Too Small"
+	case "source_unavailable":
+		return "❌", "Source Unavailable"
+	case "custom_exclude":
+		return "⚙️", "Custom Exclusions"
+	case "custom_include":
+		return "✨", "Custom Inclusions"
+	case "high_density_inline":
+		return "📊", "High-Density Inline Scripts"
+	case "inline_system_script":
+		return "🔧", "Inline System Scripts"
+	case "inline_script_blocked":
+		return "🚫", "Inline Scripts (All Blocked)"
+	default:
+		return "❓", reason
+	}
+}
+
+func generateSummaryCards(metrics CoverageMetrics) string {
+	cards := []struct {
+		title string
+		stat  CoverageStat
+		icon  string
+	}{
+		{"Statements", metrics.Statements, "📊"},
+		{"Functions", metrics.Functions, "⚡"},
+		{"Lines", metrics.Lines, "📝"},
+		{"Overall", CoverageStat{Pct: (metrics.Statements.Pct + metrics.Functions.Pct + metrics.Lines.Pct) / 3}, "🎯"},
+	}
+
+	var result strings.Builder
+	for _, card := range cards {
+		bgColor := getCoverageColor(card.stat.Pct)
+		result.WriteString(fmt.Sprintf(`
+            <div class="bg-white rounded-lg shadow-md p-6 %s">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">%s %s</p>
+                        <p class="text-2xl font-bold text-gray-900">%.1f%%</p>
+                        <p class="text-xs text-gray-500">%d/%d covered</p>
+                    </div>
+                    <div class="text-2xl">%s</div>
+                </div>
+                <div class="mt-4">
+                    <div class="bg-gray-200 rounded-full h-2">
+                        <div class="bg-blue-600 h-2 rounded-full" style="width: %.1f%%"></div>
+                    </div>
+                </div>
+            </div>`,
+			bgColor, card.icon, card.title, card.stat.Pct, card.stat.Covered, card.stat.Total, card.icon, card.stat.Pct))
+	}
+	return result.String()
+}
+
+func generateFileTable(entries []FileEntry) string {
+	var result strings.Builder
+	for _, entry := range entries {
+		fileName := entry.URL
+		if fileName == "" {
+			fileName = fmt.Sprintf("Script %s", entry.ScriptID)
+		}
+
+		result.WriteString(fmt.Sprintf(`
+                        <tr class="hover:bg-gray-50 cursor-pointer" onclick="toggleFile('file-%s')">
+                            <td class="px-6 py-4 text-sm text-blue-600 hover:text-blue-800">%s</td>
+                            <td class="px-6 py-4 text-sm text-gray-900">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium %s">
+                                    %.1f%% (%d/%d)
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 text-sm text-gray-900">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium %s">
+                                    %.1f%% (%d/%d)
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 text-sm text-gray-900">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium %s">
+                                    %.1f%% (%d/%d)
+                                </span>
+                            </td>
+                        </tr>`,
+			entry.ScriptID, fileName,
+			getCoverageBadgeColor(entry.Metrics.Statements.Pct), entry.Metrics.Statements.Pct, entry.Metrics.Statements.Covered, entry.Metrics.Statements.Total,
+			getCoverageBadgeColor(entry.Metrics.Functions.Pct), entry.Metrics.Functions.Pct, entry.Metrics.Functions.Covered, entry.Metrics.Functions.Total,
+			getCoverageBadgeColor(entry.Metrics.Lines.Pct), entry.Metrics.Lines.Pct, entry.Metrics.Lines.Covered, entry.Metrics.Lines.Total))
+	}
+	return result.String()
+}
+
+func generateFileDetails(entries []FileEntry) string {
+	var result strings.Builder
+	for _, entry := range entries {
+		fileName := entry.URL
+		if fileName == "" {
+			fileName = fmt.Sprintf("Script %s", entry.ScriptID)
+		}
+
+		result.WriteString(fmt.Sprintf(`
+        <div id="file-%s" class="hidden bg-white rounded-lg shadow-md mb-6">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h3 class="text-lg font-semibold text-gray-900">%s</h3>
+                <div class="mt-2 flex space-x-4 text-sm text-gray-600">
+                    <span>Statements: %.1f%%</span>
+                    <span>Functions: %.1f%%</span>
+                    <span>Lines: %.1f%%</span>
+                </div>
+            </div>
+            <div class="p-0">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <tbody>%s</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>`,
+			entry.ScriptID, fileName,
+			entry.Metrics.Statements.Pct, entry.Metrics.Functions.Pct, entry.Metrics.Lines.Pct,
+			generateSourceLines(entry)))
+	}
+	return result.String()
+}
+
+func generateSourceLines(entry FileEntry) string {
+	var result strings.Builder
+	sourceLen := len(entry.Source)
+
+	// Create coverage map
+	coverage := make([]bool, sourceLen)
+	for _, r := range entry.Ranges {
+		if r.Count > 0 {
+			for i := r.StartOffset; i < r.EndOffset && i < sourceLen; i++ {
+				coverage[i] = true
+			}
+		}
+	}
+
+	for lineNum, line := range entry.Lines {
+		// Determine if line is covered
+		lineStart := 0
+		for i := 0; i < lineNum; i++ {
+			lineStart += len(entry.Lines[i]) + 1 // +1 for newline
+		}
+		lineEnd := lineStart + len(line)
+
+		lineCovered := false
+		hasExecutableCode := false
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "//") && !strings.HasPrefix(trimmed, "/*") {
+			hasExecutableCode = true
+			for k := lineStart; k < lineEnd && k < len(coverage); k++ {
+				if coverage[k] {
+					lineCovered = true
+					break
+				}
+			}
+		}
+
+		lineClass := ""
+		if hasExecutableCode {
+			if lineCovered {
+				lineClass = "line-covered"
+			} else {
+				lineClass = "line-uncovered"
+			}
+		}
+
+		result.WriteString(fmt.Sprintf(`
+                            <tr class="%s">
+                                <td class="line-number px-4 py-1 text-right text-gray-500 select-none w-16">%d</td>
+                                <td class="px-4 py-1">
+                                    <pre class="whitespace-pre-wrap font-mono text-xs"><code class="language-javascript">%s</code></pre>
+                                </td>
+                            </tr>`,
+			lineClass, lineNum+1, strings.Replace(strings.Replace(line, "<", "&lt;", -1), ">", "&gt;", -1)))
+	}
+
+	return result.String()
+}
+
+func getCoverageColor(pct float64) string {
+	if pct >= 80 {
+		return "coverage-high"
+	} else if pct >= 60 {
+		return "coverage-medium"
+	}
+	return "coverage-low"
+}
+
+func getCoverageBadgeColor(pct float64) string {
+	if pct >= 80 {
+		return "bg-green-100 text-green-800"
+	} else if pct >= 60 {
+		return "bg-yellow-100 text-yellow-800"
+	}
+	return "bg-red-100 text-red-800"
 }
 
 func generateCoverageIndex(goPct, jsPct float64) {
