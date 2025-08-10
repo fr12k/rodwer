@@ -420,7 +420,7 @@ func TestCoverageReport(t *testing.T) {
 
 	// Create browser using Rodwer API
 	browserOpts := BrowserOptions{
-		Headless:  false,
+		Headless:  true,
 		NoSandbox: true,
 	}
 
@@ -586,8 +586,8 @@ func computeJavaScriptCoverageFromEntries(entries []CoverageEntry) float64 {
 
 // generateJSReportWithPreCollectedSources generates Istanbul.js-style report with pre-collected source data
 func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.ProfilerScriptCoverage, indexToSource map[int]string) {
-	// Use production filtering options for strictest application-only filtering
-	filterOptions := getProductionFilterOptions()
+	// Use application coverage filtering options for HTML report generation
+	filterOptions := getApplicationCoverageFilterOptions()
 
 	entries := make([]FileEntry, 0, len(raw))
 	var totalMetrics CoverageMetrics
@@ -596,10 +596,7 @@ func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.Profiler
 	filterStats.TotalScripts = len(raw)
 	filterStats.FilterReasons = make(map[string]int)
 
-	// Group scripts by URL to properly aggregate functions
-	urlToScripts := make(map[string][]*proto.ProfilerScriptCoverage)
-	urlToSources := make(map[string]string)
-
+	// Process each script individually to avoid losing scripts with same URL
 	for i, r := range raw {
 		// Get pre-collected script source instead of fetching via Rod
 		scriptSource := indexToSource[i]
@@ -616,48 +613,32 @@ func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.Profiler
 			continue // Skip this script
 		}
 
-		// Group by URL for proper function aggregation
+		// Create unique URL identifier to distinguish scripts with same URL
 		url := r.URL
 		if url == "" {
 			url = fmt.Sprintf("Script_%s", r.ScriptID)
+		} else {
+			// Add script ID to make each script entry unique
+			url = fmt.Sprintf("%s#%s", url, r.ScriptID)
 		}
 
-		urlToScripts[url] = append(urlToScripts[url], r)
-		if urlToSources[url] == "" || len(scriptSource) > len(urlToSources[url]) {
-			// Use the longest source (most complete)
-			urlToSources[url] = scriptSource
-		}
-	}
-
-	// Process each URL group
-	for url, scripts := range urlToScripts {
-		// Aggregate all functions and ranges for this URL
-		var allFunctions []*proto.ProfilerFunctionCoverage
+		// Collect all ranges from all functions for this script
 		var allRanges []*proto.ProfilerCoverageRange
-
-		for _, script := range scripts {
-			if script.Functions != nil {
-				allFunctions = append(allFunctions, script.Functions...)
-			}
-		}
-
-		// Collect all ranges from all functions
-		for _, function := range allFunctions {
+		for _, function := range r.Functions {
 			if function.Ranges != nil {
 				allRanges = append(allRanges, function.Ranges...)
 			}
 		}
 
-		source := urlToSources[url]
-		lines := strings.Split(source, "\n")
+		lines := strings.Split(scriptSource, "\n")
 
-		// Calculate metrics for this file
-		metrics := calculateCoverageMetrics(source, allRanges, allFunctions)
+		// Calculate metrics for this individual script
+		metrics := calculateCoverageMetrics(scriptSource, allRanges, r.Functions)
 
 		entry := FileEntry{
-			ScriptID: scripts[0].ScriptID, // Use first script ID as representative
+			ScriptID: r.ScriptID,
 			URL:      url,
-			Source:   source,
+			Source:   scriptSource,
 			Lines:    lines,
 			Ranges:   allRanges,
 			Metrics:  metrics,
@@ -808,6 +789,26 @@ func getProductionFilterOptions() CoverageFilterOptions {
 		ExcludeInlineSystemScripts:      true,
 		MinScriptSize:                   50, // Stricter minimum
 		MaxStatementsPerLine:            5,  // Ultra-strict threshold for production
+		CustomExcludePatterns:           []string{},
+		CustomIncludePatterns:           []string{},
+	}
+}
+
+// getApplicationCoverageFilterOptions returns filter options optimized for application script coverage reports
+// Less restrictive on script size to include small but legitimate application scripts
+func getApplicationCoverageFilterOptions() CoverageFilterOptions {
+	return CoverageFilterOptions{
+		ExcludeEmptyURLs:                true,
+		ExcludeDevTools:                 true,
+		ExcludeBrowserExt:               true,
+		ExcludeFrameworkTools:           true,
+		ExcludeCDNLibraries:             true,
+		ExcludeMinifiedCode:             true,
+		ExcludeTestFrameworks:           true,
+		ExcludeHighDensityInlineScripts: true,
+		ExcludeInlineSystemScripts:      true,
+		MinScriptSize:                   15, // More permissive for small application scripts
+		MaxStatementsPerLine:            5,  // Keep strict threshold for minification detection
 		CustomExcludePatterns:           []string{},
 		CustomIncludePatterns:           []string{},
 	}
@@ -1234,8 +1235,8 @@ func filterApplicationScriptsWithStats(scripts []*proto.ProfilerScriptCoverage, 
 func generateJSReport(t interface{ Fatal(args ...any) }, page *rod.Page, raw []*proto.ProfilerScriptCoverage) {
 	client := page
 
-	// Use production filtering options for strictest application-only filtering
-	filterOptions := getProductionFilterOptions()
+	// Use application coverage filtering options for HTML report generation
+	filterOptions := getApplicationCoverageFilterOptions()
 
 	entries := make([]FileEntry, 0, len(raw))
 	var totalMetrics CoverageMetrics
@@ -1244,10 +1245,7 @@ func generateJSReport(t interface{ Fatal(args ...any) }, page *rod.Page, raw []*
 	filterStats.TotalScripts = len(raw)
 	filterStats.FilterReasons = make(map[string]int)
 
-	// Group scripts by URL to properly aggregate functions
-	urlToScripts := make(map[string][]*proto.ProfilerScriptCoverage)
-	urlToSources := make(map[string]string)
-
+	// Process each script individually to avoid losing scripts with same URL
 	for _, r := range raw {
 		srcResp, err := proto.DebuggerGetScriptSource{ScriptID: r.ScriptID}.Call(client)
 		if err != nil || srcResp.ScriptSource == "" {
@@ -1263,49 +1261,40 @@ func generateJSReport(t interface{ Fatal(args ...any) }, page *rod.Page, raw []*
 			continue // Skip this script
 		}
 
-		// Group by URL for proper function aggregation
+		// Create unique URL identifier to distinguish scripts with same URL
 		url := r.URL
 		if url == "" {
 			url = fmt.Sprintf("Script_%s", r.ScriptID)
+		} else {
+			// Add script ID to make each script entry unique
+			url = fmt.Sprintf("%s#%s", url, r.ScriptID)
 		}
 
-		urlToScripts[url] = append(urlToScripts[url], r)
-		if urlToSources[url] == "" || len(srcResp.ScriptSource) > len(urlToSources[url]) {
-			// Use the longest source (most complete)
-			urlToSources[url] = srcResp.ScriptSource
-		}
-	}
-
-	// Process each URL group
-	for url, scripts := range urlToScripts {
-		// Aggregate all functions and ranges for this URL
-		var allFunctions []*proto.ProfilerFunctionCoverage
+		// Collect all ranges from all functions for this script
 		var allRanges []*proto.ProfilerCoverageRange
-
-		for _, script := range scripts {
-			allFunctions = append(allFunctions, script.Functions...)
-			for _, fn := range script.Functions {
-				allRanges = append(allRanges, fn.Ranges...)
+		for _, function := range r.Functions {
+			if function.Ranges != nil {
+				allRanges = append(allRanges, function.Ranges...)
 			}
 		}
 
-		source := urlToSources[url]
-		lines := strings.Split(source, "\n")
-		metrics := calculateCoverageMetrics(source, allRanges, allFunctions)
+		lines := strings.Split(srcResp.ScriptSource, "\n")
 
-		// Use first script's ID for the entry (for display purposes)
-		firstScriptID := scripts[0].ScriptID
+		// Calculate metrics for this individual script
+		metrics := calculateCoverageMetrics(srcResp.ScriptSource, allRanges, r.Functions)
 
-		entries = append(entries, FileEntry{
-			ScriptID: firstScriptID,
+		entry := FileEntry{
+			ScriptID: r.ScriptID,
 			URL:      url,
-			Source:   source,
+			Source:   srcResp.ScriptSource,
 			Lines:    lines,
 			Ranges:   allRanges,
 			Metrics:  metrics,
-		})
+		}
 
-		// Aggregate total metrics
+		entries = append(entries, entry)
+
+		// Add to total metrics
 		totalMetrics.Statements.Total += metrics.Statements.Total
 		totalMetrics.Statements.Covered += metrics.Statements.Covered
 		totalMetrics.Functions.Total += metrics.Functions.Total
