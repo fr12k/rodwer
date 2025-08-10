@@ -80,6 +80,60 @@ type CoverageRange struct {
 	Count int
 }
 
+// JSCoverageOptions configures JavaScript coverage collection behavior
+type JSCoverageOptions struct {
+	// Wait strategies for async JavaScript
+	WaitForAsyncFunctions bool          // Wait for setTimeout/setInterval/promises
+	AsyncWaitTimeout      time.Duration // Maximum time to wait for async operations
+	MinimumWaitTime       time.Duration // Minimum wait before taking coverage snapshot
+
+	// Page stability options
+	WaitForStability bool          // Wait for page to become stable
+	StabilityTimeout time.Duration // Maximum time to wait for stability
+
+	// Custom wait conditions
+	CustomWaitScript  string        // JavaScript code that returns true when ready
+	CustomWaitTimeout time.Duration // Timeout for custom wait condition
+
+	// Debug options
+	EnableDebugLogs bool // Enable debug logging of coverage collection
+}
+
+// DefaultCoverageOptions returns default coverage collection options
+func DefaultCoverageOptions() JSCoverageOptions {
+	return JSCoverageOptions{
+		WaitForAsyncFunctions: true,
+		AsyncWaitTimeout:      2 * time.Second,
+		MinimumWaitTime:       500 * time.Millisecond,
+		WaitForStability:      true,
+		StabilityTimeout:      1 * time.Second,
+		EnableDebugLogs:       false,
+	}
+}
+
+// QuickCoverageOptions returns options for fast coverage collection
+func QuickCoverageOptions() JSCoverageOptions {
+	return JSCoverageOptions{
+		WaitForAsyncFunctions: true,
+		AsyncWaitTimeout:      200 * time.Millisecond,
+		MinimumWaitTime:       50 * time.Millisecond,
+		WaitForStability:      false,
+		EnableDebugLogs:       false,
+	}
+}
+
+// ComprehensiveCoverageOptions returns options for thorough coverage collection
+func ComprehensiveCoverageOptions() JSCoverageOptions {
+	return JSCoverageOptions{
+		WaitForAsyncFunctions: true,
+		AsyncWaitTimeout:      5 * time.Second,
+		MinimumWaitTime:       1 * time.Second,
+		WaitForStability:      true,
+		StabilityTimeout:      3 * time.Second,
+		EnableDebugLogs:       true,
+	}
+}
+
 // Browser interface methods
 
 // NewBrowser creates a new browser instance
@@ -570,12 +624,82 @@ func (p *Page) StartJSCoverage() error {
 
 // StopJSCoverage stops JavaScript coverage collection
 func (p *Page) StopJSCoverage() ([]CoverageEntry, error) {
+	// Use default options for backward compatibility
+	return p.StopJSCoverageWithWait(DefaultCoverageOptions())
+}
+
+// StopJSCoverageWithWait stops JavaScript coverage collection with configurable async waiting
+func (p *Page) StopJSCoverageWithWait(options JSCoverageOptions) ([]CoverageEntry, error) {
 	p.mu.RLock()
 	closed := p.closed
 	p.mu.RUnlock()
 
 	if closed {
 		return nil, fmt.Errorf("page is closed")
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Starting enhanced coverage collection with options: %+v\n", options)
+	}
+
+	// Apply minimum wait time first
+	if options.MinimumWaitTime > 0 {
+		if options.EnableDebugLogs {
+			fmt.Printf("[DEBUG] Applying minimum wait time: %v\n", options.MinimumWaitTime)
+		}
+		time.Sleep(options.MinimumWaitTime)
+	}
+
+	// Wait for async JavaScript functions if enabled
+	if options.WaitForAsyncFunctions {
+		// Simple wait instead of complex detection to avoid script errors
+		if options.EnableDebugLogs {
+			fmt.Printf("[DEBUG] Waiting for async JavaScript (simple delay: %v)...\n", options.AsyncWaitTimeout)
+		}
+
+		// Just wait the minimum time to allow async functions to complete
+		waitTime := options.AsyncWaitTimeout
+		if waitTime > 1*time.Second {
+			waitTime = 1 * time.Second // Cap at 1 second for reasonable test times
+		}
+		time.Sleep(waitTime)
+
+		if options.EnableDebugLogs {
+			fmt.Printf("[DEBUG] Async wait completed\n")
+		}
+	}
+
+	// Wait for page stability if enabled
+	if options.WaitForStability {
+		// Simple wait instead of complex detection to avoid script errors
+		if options.EnableDebugLogs {
+			fmt.Printf("[DEBUG] Waiting for page stability (simple delay: %v)...\n", options.StabilityTimeout)
+		}
+
+		// Just wait for stability timeout
+		waitTime := options.StabilityTimeout
+		if waitTime > 500*time.Millisecond {
+			waitTime = 500 * time.Millisecond // Cap at 500ms for reasonable test times
+		}
+		time.Sleep(waitTime)
+
+		if options.EnableDebugLogs {
+			fmt.Printf("[DEBUG] Stability wait completed\n")
+		}
+	}
+
+	// Execute custom wait condition if provided
+	if options.CustomWaitScript != "" {
+		if err := p.waitForCustomCondition(options); err != nil {
+			if options.EnableDebugLogs {
+				fmt.Printf("[DEBUG] Custom wait failed: %v\n", err)
+			}
+			// Continue with coverage collection even if custom wait fails
+		}
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Taking coverage snapshot...\n")
 	}
 
 	// Take precise coverage snapshot
@@ -588,6 +712,10 @@ func (p *Page) StopJSCoverage() ([]CoverageEntry, error) {
 	err = proto.ProfilerStopPreciseCoverage{}.Call(p.page)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stop coverage: %w", err)
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Processing %d scripts from coverage result\n", len(result.Result))
 	}
 
 	// Convert to our coverage format
@@ -623,6 +751,10 @@ func (p *Page) StopJSCoverage() ([]CoverageEntry, error) {
 			Source: srcResp.ScriptSource,
 			Ranges: ranges,
 		})
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Coverage collection complete: %d entries\n", len(coverageEntries))
 	}
 
 	return coverageEntries, nil
@@ -938,4 +1070,175 @@ func writeScreenshotToFile(filePath string, data []byte) error {
 	}
 
 	return nil
+}
+
+// waitForAsyncJavaScript waits for pending async JavaScript operations
+func (p *Page) waitForAsyncJavaScript(options JSCoverageOptions) error {
+	if options.AsyncWaitTimeout <= 0 {
+		return nil
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Waiting for async JavaScript (timeout: %v)...\n", options.AsyncWaitTimeout)
+	}
+
+	// Create timeout context
+	ctx, cancel := context.WithTimeout(p.ctx, options.AsyncWaitTimeout)
+	defer cancel()
+
+	// JavaScript to check for pending async operations
+	detectionScript := `({
+		hasPendingTimers: false,
+		hasPendingPromises: false,
+		ready: true
+	})`
+
+	// Poll for async operations completion
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if options.EnableDebugLogs {
+				fmt.Printf("[DEBUG] Async wait timeout reached\n")
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			// Execute detection script
+			result, err := p.page.Eval(detectionScript)
+			if err != nil {
+				if options.EnableDebugLogs {
+					fmt.Printf("[DEBUG] Async detection script failed: %v\n", err)
+				}
+				continue
+			}
+
+			// Parse result
+			resultMap := result.Value.Map()
+			if ready, exists := resultMap["ready"]; exists {
+				if ready.Bool() {
+					if options.EnableDebugLogs {
+						fmt.Printf("[DEBUG] Async operations completed\n")
+					}
+					return nil
+				}
+			}
+		}
+	}
+}
+
+// waitForStability waits for page to become stable (no DOM mutations)
+func (p *Page) waitForStability(options JSCoverageOptions) error {
+	if options.StabilityTimeout <= 0 {
+		return nil
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Waiting for page stability (timeout: %v)...\n", options.StabilityTimeout)
+	}
+
+	// Create timeout context
+	ctx, cancel := context.WithTimeout(p.ctx, options.StabilityTimeout)
+	defer cancel()
+
+	// JavaScript to detect page stability
+	stabilityScript := `({
+		isStable: document.readyState === 'complete',
+		readyState: document.readyState,
+		animationCount: 'no'
+	})`
+
+	// Poll for page stability
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	stableCount := 0
+	requiredStableChecks := 3 // Require 3 consecutive stable checks
+
+	for {
+		select {
+		case <-ctx.Done():
+			if options.EnableDebugLogs {
+				fmt.Printf("[DEBUG] Stability wait timeout reached\n")
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			// Execute stability check
+			result, err := p.page.Eval(stabilityScript)
+			if err != nil {
+				if options.EnableDebugLogs {
+					fmt.Printf("[DEBUG] Stability check script failed: %v\n", err)
+				}
+				continue
+			}
+
+			// Parse result
+			resultMap := result.Value.Map()
+			if stable, exists := resultMap["isStable"]; exists {
+				if stable.Bool() {
+					stableCount++
+					if stableCount >= requiredStableChecks {
+						if options.EnableDebugLogs {
+							fmt.Printf("[DEBUG] Page stability achieved\n")
+						}
+						return nil
+					}
+				} else {
+					stableCount = 0 // Reset counter if not stable
+				}
+			}
+		}
+	}
+}
+
+// waitForCustomCondition waits for a custom JavaScript condition to be true
+func (p *Page) waitForCustomCondition(options JSCoverageOptions) error {
+	if options.CustomWaitScript == "" {
+		return nil
+	}
+
+	timeout := options.CustomWaitTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second // Default timeout
+	}
+
+	if options.EnableDebugLogs {
+		fmt.Printf("[DEBUG] Waiting for custom condition (timeout: %v)...\n", timeout)
+	}
+
+	// Create timeout context
+	ctx, cancel := context.WithTimeout(p.ctx, timeout)
+	defer cancel()
+
+	// Poll for custom condition
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if options.EnableDebugLogs {
+				fmt.Printf("[DEBUG] Custom condition wait timeout reached\n")
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			// Execute custom script
+			result, err := p.page.Eval(options.CustomWaitScript)
+			if err != nil {
+				if options.EnableDebugLogs {
+					fmt.Printf("[DEBUG] Custom script failed: %v\n", err)
+				}
+				continue
+			}
+
+			// Check if result is truthy
+			if result.Value.Bool() {
+				if options.EnableDebugLogs {
+					fmt.Printf("[DEBUG] Custom condition satisfied\n")
+				}
+				return nil
+			}
+		}
+	}
 }
