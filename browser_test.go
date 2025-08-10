@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -584,10 +585,13 @@ func computeJavaScriptCoverageFromEntries(entries []CoverageEntry) float64 {
 	return float64(coveredBytes) / float64(totalBytes) * 100
 }
 
-// generateJSReportWithPreCollectedSources generates Istanbul.js-style report with pre-collected source data
-func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.ProfilerScriptCoverage, indexToSource map[int]string) {
+// SourceProvider is a function type that provides source code for a given script index and ScriptCoverage
+type SourceProvider func(index int, script *proto.ProfilerScriptCoverage) (string, error)
+
+// generateJSReportUnified generates Istanbul.js-style report with flexible source fetching
+func generateJSReportUnified(raw []*proto.ProfilerScriptCoverage, sourceProvider SourceProvider, outputFunc func(string, ...interface{})) FilteringStats {
 	// Use application coverage filtering options for HTML report generation
-	filterOptions := getApplicationCoverageFilterOptions()
+	filterOptions := getFilterOptions("application")
 
 	entries := make([]FileEntry, 0, len(raw))
 	var totalMetrics CoverageMetrics
@@ -598,9 +602,9 @@ func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.Profiler
 
 	// Process each script individually to avoid losing scripts with same URL
 	for i, r := range raw {
-		// Get pre-collected script source instead of fetching via Rod
-		scriptSource := indexToSource[i]
-		if scriptSource == "" {
+		// Get script source using the provided strategy
+		scriptSource, err := sourceProvider(i, r)
+		if err != nil || scriptSource == "" {
 			filterStats.FilterReasons["source_unavailable"]++
 			continue
 		}
@@ -677,9 +681,28 @@ func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.Profiler
 	jsHTML := "coverage/js-coverage.html"
 	_ = os.WriteFile(jsHTML, []byte(html), 0644)
 
-	t.Logf("JavaScript coverage report written to %s", jsHTML)
-	t.Logf("Coverage Summary - Statements: %.1f%%, Functions: %.1f%%, Lines: %.1f%%",
+	outputFunc("JavaScript coverage report written to %s", jsHTML)
+	outputFunc("Coverage Summary - Statements: %.1f%%, Functions: %.1f%%, Lines: %.1f%%",
 		totalMetrics.Statements.Pct, totalMetrics.Functions.Pct, totalMetrics.Lines.Pct)
+
+	return filterStats
+}
+
+// generateJSReportWithPreCollectedSources generates Istanbul.js-style report with pre-collected source data
+func generateJSReportWithPreCollectedSources(t *testing.T, raw []*proto.ProfilerScriptCoverage, indexToSource map[int]string) {
+	sourceProvider := func(index int, script *proto.ProfilerScriptCoverage) (string, error) {
+		source := indexToSource[index]
+		if source == "" {
+			return "", fmt.Errorf("source unavailable for index %d", index)
+		}
+		return source, nil
+	}
+
+	outputFunc := func(format string, args ...interface{}) {
+		t.Logf(format, args...)
+	}
+
+	_ = generateJSReportUnified(raw, sourceProvider, outputFunc)
 }
 
 type OldCoverageEntry struct {
@@ -737,9 +760,11 @@ type FileEntry struct {
 	Metrics  CoverageMetrics
 }
 
-// getDefaultFilterOptions returns sensible default filtering options
-func getDefaultFilterOptions() CoverageFilterOptions {
-	return CoverageFilterOptions{
+// getFilterOptions returns CoverageFilterOptions based on the specified profile
+// Supported profiles: "default", "development", "production", "application"
+func getFilterOptions(profile string) CoverageFilterOptions {
+	// Base options that are common across all profiles
+	options := CoverageFilterOptions{
 		ExcludeEmptyURLs:                true,
 		ExcludeDevTools:                 true,
 		ExcludeBrowserExt:               true,
@@ -754,64 +779,27 @@ func getDefaultFilterOptions() CoverageFilterOptions {
 		CustomExcludePatterns:           []string{},
 		CustomIncludePatterns:           []string{},
 	}
-}
 
-// getDevelopmentFilterOptions returns more permissive options for development
-func getDevelopmentFilterOptions() CoverageFilterOptions {
-	return CoverageFilterOptions{
-		ExcludeEmptyURLs:                true,
-		ExcludeDevTools:                 true,
-		ExcludeBrowserExt:               true,
-		ExcludeFrameworkTools:           false, // Include for debugging
-		ExcludeCDNLibraries:             true,
-		ExcludeMinifiedCode:             false, // Include for debugging
-		ExcludeTestFrameworks:           false, // Include test code
-		ExcludeHighDensityInlineScripts: false, // Include for analysis
-		ExcludeInlineSystemScripts:      true,  // Still exclude system scripts
-		MinScriptSize:                   10,    // More permissive
-		MaxStatementsPerLine:            100,   // More permissive threshold
-		CustomExcludePatterns:           []string{},
-		CustomIncludePatterns:           []string{},
+	// Apply profile-specific customizations
+	switch profile {
+	case "development":
+		options.ExcludeFrameworkTools = false           // Include for debugging
+		options.ExcludeMinifiedCode = false             // Include for debugging
+		options.ExcludeTestFrameworks = false           // Include test code
+		options.ExcludeHighDensityInlineScripts = false // Include for analysis
+		options.MinScriptSize = 10                      // More permissive
+		options.MaxStatementsPerLine = 100              // More permissive threshold
+	case "production":
+		options.MinScriptSize = 50       // Stricter minimum
+		options.MaxStatementsPerLine = 5 // Ultra-strict threshold for production
+	case "application":
+		options.MinScriptSize = 15       // More permissive for small application scripts
+		options.MaxStatementsPerLine = 5 // Keep strict threshold for minification detection
+	case "default":
+		// Use base options as-is
 	}
-}
 
-// getProductionFilterOptions returns strict filtering for production analysis
-func getProductionFilterOptions() CoverageFilterOptions {
-	return CoverageFilterOptions{
-		ExcludeEmptyURLs:                true,
-		ExcludeDevTools:                 true,
-		ExcludeBrowserExt:               true,
-		ExcludeFrameworkTools:           true,
-		ExcludeCDNLibraries:             true,
-		ExcludeMinifiedCode:             true,
-		ExcludeTestFrameworks:           true,
-		ExcludeHighDensityInlineScripts: true,
-		ExcludeInlineSystemScripts:      true,
-		MinScriptSize:                   50, // Stricter minimum
-		MaxStatementsPerLine:            5,  // Ultra-strict threshold for production
-		CustomExcludePatterns:           []string{},
-		CustomIncludePatterns:           []string{},
-	}
-}
-
-// getApplicationCoverageFilterOptions returns filter options optimized for application script coverage reports
-// Less restrictive on script size to include small but legitimate application scripts
-func getApplicationCoverageFilterOptions() CoverageFilterOptions {
-	return CoverageFilterOptions{
-		ExcludeEmptyURLs:                true,
-		ExcludeDevTools:                 true,
-		ExcludeBrowserExt:               true,
-		ExcludeFrameworkTools:           true,
-		ExcludeCDNLibraries:             true,
-		ExcludeMinifiedCode:             true,
-		ExcludeTestFrameworks:           true,
-		ExcludeHighDensityInlineScripts: true,
-		ExcludeInlineSystemScripts:      true,
-		MinScriptSize:                   15, // More permissive for small application scripts
-		MaxStatementsPerLine:            5,  // Keep strict threshold for minification detection
-		CustomExcludePatterns:           []string{},
-		CustomIncludePatterns:           []string{},
-	}
+	return options
 }
 
 // isApplicationScript determines if a script should be included in coverage reports
@@ -1235,96 +1223,28 @@ func filterApplicationScriptsWithStats(scripts []*proto.ProfilerScriptCoverage, 
 func generateJSReport(t interface{ Fatal(args ...any) }, page *rod.Page, raw []*proto.ProfilerScriptCoverage) {
 	client := page
 
-	// Use application coverage filtering options for HTML report generation
-	filterOptions := getApplicationCoverageFilterOptions()
+	sourceProvider := func(index int, script *proto.ProfilerScriptCoverage) (string, error) {
+		srcResp, err := proto.DebuggerGetScriptSource{ScriptID: script.ScriptID}.Call(client)
+		if err != nil {
+			return "", fmt.Errorf("failed to get script source for ScriptID %s: %w", script.ScriptID, err)
+		}
+		if srcResp.ScriptSource == "" {
+			return "", fmt.Errorf("empty script source for ScriptID %s", script.ScriptID)
+		}
+		return srcResp.ScriptSource, nil
+	}
 
-	entries := make([]FileEntry, 0, len(raw))
-	var totalMetrics CoverageMetrics
 	var filterStats FilteringStats
-
-	filterStats.TotalScripts = len(raw)
-	filterStats.FilterReasons = make(map[string]int)
-
-	// Process each script individually to avoid losing scripts with same URL
-	for _, r := range raw {
-		srcResp, err := proto.DebuggerGetScriptSource{ScriptID: r.ScriptID}.Call(client)
-		if err != nil || srcResp.ScriptSource == "" {
-			filterStats.FilterReasons["source_unavailable"]++
-			continue
-		}
-
-		// Apply filtering logic
-		isApp, reason := isApplicationScript(r, srcResp.ScriptSource, filterOptions)
-		filterStats.FilterReasons[reason]++
-
-		if !isApp {
-			continue // Skip this script
-		}
-
-		// Create unique URL identifier to distinguish scripts with same URL
-		url := r.URL
-		if url == "" {
-			url = fmt.Sprintf("Script_%s", r.ScriptID)
+	outputFunc := func(format string, args ...interface{}) {
+		if format == "JavaScript coverage report written to %s" {
+			fmt.Printf("✅ Wrote enhanced JS coverage report (%d application scripts, %d filtered): %s\n",
+				filterStats.ApplicationScripts, filterStats.FilteredOut, args[0])
 		} else {
-			// Add script ID to make each script entry unique
-			url = fmt.Sprintf("%s#%s", url, r.ScriptID)
+			// Skip the coverage summary as it's not needed in this output format
 		}
-
-		// Collect all ranges from all functions for this script
-		var allRanges []*proto.ProfilerCoverageRange
-		for _, function := range r.Functions {
-			if function.Ranges != nil {
-				allRanges = append(allRanges, function.Ranges...)
-			}
-		}
-
-		lines := strings.Split(srcResp.ScriptSource, "\n")
-
-		// Calculate metrics for this individual script
-		metrics := calculateCoverageMetrics(srcResp.ScriptSource, allRanges, r.Functions)
-
-		entry := FileEntry{
-			ScriptID: r.ScriptID,
-			URL:      url,
-			Source:   srcResp.ScriptSource,
-			Lines:    lines,
-			Ranges:   allRanges,
-			Metrics:  metrics,
-		}
-
-		entries = append(entries, entry)
-
-		// Add to total metrics
-		totalMetrics.Statements.Total += metrics.Statements.Total
-		totalMetrics.Statements.Covered += metrics.Statements.Covered
-		totalMetrics.Functions.Total += metrics.Functions.Total
-		totalMetrics.Functions.Covered += metrics.Functions.Covered
-		totalMetrics.Lines.Total += metrics.Lines.Total
-		totalMetrics.Lines.Covered += metrics.Lines.Covered
 	}
 
-	// Calculate final filtering statistics
-	filterStats.ApplicationScripts = len(entries)
-	filterStats.FilteredOut = filterStats.TotalScripts - filterStats.ApplicationScripts
-
-	// Calculate total percentages
-	if totalMetrics.Statements.Total > 0 {
-		totalMetrics.Statements.Pct = float64(totalMetrics.Statements.Covered) / float64(totalMetrics.Statements.Total) * 100
-	}
-	if totalMetrics.Functions.Total > 0 {
-		totalMetrics.Functions.Pct = float64(totalMetrics.Functions.Covered) / float64(totalMetrics.Functions.Total) * 100
-	}
-	if totalMetrics.Lines.Total > 0 {
-		totalMetrics.Lines.Pct = float64(totalMetrics.Lines.Covered) / float64(totalMetrics.Lines.Total) * 100
-	}
-
-	sort.Slice(entries, func(i, j int) bool { return entries[i].URL < entries[j].URL })
-
-	html := generateIstanbulStyleHTML(entries, totalMetrics, filterStats)
-
-	_ = os.WriteFile(jsHTML, []byte(html), 0644)
-	fmt.Printf("✅ Wrote enhanced JS coverage report (%d application scripts, %d filtered): %s\n",
-		filterStats.ApplicationScripts, filterStats.FilteredOut, jsHTML)
+	filterStats = generateJSReportUnified(raw, sourceProvider, outputFunc)
 }
 
 func calculateCoverageMetrics(source string, ranges []*proto.ProfilerCoverageRange, functions []*proto.ProfilerFunctionCoverage) CoverageMetrics {
@@ -1428,8 +1348,8 @@ func calculatePct(covered, total int) float64 {
 	return float64(covered) / float64(total) * 100
 }
 
-func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics, filterStats FilteringStats) string {
-	return fmt.Sprintf(`<!DOCTYPE html>
+// HTML templates as constants
+const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1450,32 +1370,23 @@ func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics
 </head>
 <body class="bg-gray-50 text-gray-900">
     <div class="container mx-auto px-4 py-8">
-        <!-- Header -->
         <div class="mb-8">
             <h1 class="text-3xl font-bold text-gray-900 mb-2">JavaScript Coverage Report</h1>
-            <p class="text-gray-600">Generated on %s</p>
+            <p class="text-gray-600">Generated on {{.Timestamp}}</p>
             <div class="mt-3 flex flex-wrap gap-4 text-sm">
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                    📁 %d Application Scripts
+                    📁 {{.FilterStats.ApplicationScripts}} Application Scripts
                 </span>
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                    🚫 %d Scripts Filtered
+                    🚫 {{.FilterStats.FilteredOut}} Scripts Filtered
                 </span>
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                    📊 %d Total Scripts Analyzed
+                    📊 {{.FilterStats.TotalScripts}} Total Scripts Analyzed
                 </span>
             </div>
         </div>
-
-        <!-- Coverage Summary -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            %s
-        </div>
-
-        <!-- Filtering Statistics -->
-        %s
-
-        <!-- File List -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">{{.SummaryCards}}</div>
+        {{.FilteringStats}}
         <div class="bg-white rounded-lg shadow-md mb-8">
             <div class="px-6 py-4 border-b border-gray-200">
                 <h2 class="text-xl font-semibold text-gray-900">File Coverage</h2>
@@ -1490,36 +1401,85 @@ func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lines</th>
                         </tr>
                     </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        %s
-                    </tbody>
+                    <tbody class="bg-white divide-y divide-gray-200">{{.FileTable}}</tbody>
                 </table>
             </div>
         </div>
-
-        <!-- File Details -->
-        %s
+        {{.FileDetails}}
     </div>
-
     <script>
         function toggleFile(fileId) {
             const element = document.getElementById(fileId);
             element.classList.toggle('hidden');
         }
-        
-        // Initialize syntax highlighting
         Prism.highlightAll();
     </script>
 </body>
-</html>`,
-		time.Now().Format("2006-01-02 15:04:05"),
-		filterStats.ApplicationScripts,
-		filterStats.FilteredOut,
-		filterStats.TotalScripts,
-		generateSummaryCards(totalMetrics),
-		generateFilteringStats(filterStats),
-		generateFileTable(entries),
-		generateFileDetails(entries))
+</html>`
+
+type htmlData struct {
+	Timestamp      string
+	FilterStats    FilteringStats
+	SummaryCards   string
+	FilteringStats string
+	FileTable      string
+	FileDetails    string
+}
+
+func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics, filterStats FilteringStats) string {
+	tmpl := template.Must(template.New("coverage").Parse(htmlTemplate))
+
+	data := htmlData{
+		Timestamp:      time.Now().Format("2006-01-02 15:04:05"),
+		FilterStats:    filterStats,
+		SummaryCards:   generateSummaryCards(totalMetrics),
+		FilteringStats: generateFilteringStats(filterStats),
+		FileTable:      generateFileTable(entries),
+		FileDetails:    generateFileDetails(entries),
+	}
+
+	var buf strings.Builder
+	tmpl.Execute(&buf, data)
+	return buf.String()
+}
+
+const filteringStatsTemplate = `
+<div class="bg-white rounded-lg shadow-md mb-8">
+    <div class="px-6 py-4 border-b border-gray-200">
+        <h2 class="text-xl font-semibold text-gray-900 flex items-center">
+            🔍 Filtering Statistics
+            <span class="ml-2 text-sm font-normal text-gray-500">
+                (Processing time: {{printf "%.1f" .ProcessingTimeMs}}ms, avg: {{printf "%.2f" .AverageTimePerScript}}ms per script)
+            </span>
+        </h2>
+    </div>
+    <div class="p-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{{range .Reasons}}
+            <div class="bg-gray-50 rounded-lg p-4">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-700">{{.Icon}} {{.Description}}</span>
+                    <span class="text-lg font-bold text-gray-900">{{.Count}}</span>
+                </div>
+                <div class="text-xs text-gray-500 mb-2">{{printf "%.1f" .Percentage}}% of scripts</div>
+                <div class="bg-gray-200 rounded-full h-2">
+                    <div class="bg-blue-600 h-2 rounded-full" style="width: {{printf "%.1f" .Percentage}}%"></div>
+                </div>
+            </div>{{end}}
+        </div>
+    </div>
+</div>`
+
+type reasonData struct {
+	Icon        string
+	Description string
+	Count       int
+	Percentage  float64
+}
+
+type filteringData struct {
+	ProcessingTimeMs     float64
+	AverageTimePerScript float64
+	Reasons              []reasonData
 }
 
 func generateFilteringStats(stats FilteringStats) string {
@@ -1527,53 +1487,28 @@ func generateFilteringStats(stats FilteringStats) string {
 		return ""
 	}
 
-	var reasonsHTML strings.Builder
-	reasonsHTML.WriteString(`
-        <div class="bg-white rounded-lg shadow-md mb-8">
-            <div class="px-6 py-4 border-b border-gray-200">
-                <h2 class="text-xl font-semibold text-gray-900 flex items-center">
-                    🔍 Filtering Statistics
-                    <span class="ml-2 text-sm font-normal text-gray-500">
-                        (Processing time: ` + fmt.Sprintf("%.1fms", float64(stats.ProcessingTimeMs)) + `, avg: ` + fmt.Sprintf("%.2fms", stats.AverageTimePerScript) + ` per script)
-                    </span>
-                </h2>
-            </div>
-            <div class="p-6">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">`)
-
-	// Sort filter reasons by count for better display
-	type reasonCount struct {
-		Reason string
-		Count  int
-	}
-	var reasons []reasonCount
+	var reasons []reasonData
 	for reason, count := range stats.FilterReasons {
-		reasons = append(reasons, reasonCount{Reason: reason, Count: count})
+		icon, description := getFilterReasonDetails(reason)
+		reasons = append(reasons, reasonData{
+			Icon:        icon,
+			Description: description,
+			Count:       count,
+			Percentage:  float64(count) / float64(stats.TotalScripts) * 100,
+		})
 	}
 	sort.Slice(reasons, func(i, j int) bool { return reasons[i].Count > reasons[j].Count })
 
-	for _, rc := range reasons {
-		icon, description := getFilterReasonDetails(rc.Reason)
-		percentage := float64(rc.Count) / float64(stats.TotalScripts) * 100
-		reasonsHTML.WriteString(fmt.Sprintf(`
-                    <div class="bg-gray-50 rounded-lg p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <span class="text-sm font-medium text-gray-700">%s %s</span>
-                            <span class="text-lg font-bold text-gray-900">%d</span>
-                        </div>
-                        <div class="text-xs text-gray-500 mb-2">%.1f%% of scripts</div>
-                        <div class="bg-gray-200 rounded-full h-2">
-                            <div class="bg-blue-600 h-2 rounded-full" style="width: %.1f%%"></div>
-                        </div>
-                    </div>`, icon, description, rc.Count, percentage, percentage))
+	tmpl := template.Must(template.New("filtering").Parse(filteringStatsTemplate))
+	data := filteringData{
+		ProcessingTimeMs:     float64(stats.ProcessingTimeMs),
+		AverageTimePerScript: stats.AverageTimePerScript,
+		Reasons:              reasons,
 	}
 
-	reasonsHTML.WriteString(`
-                </div>
-            </div>
-        </div>`)
-
-	return reasonsHTML.String()
+	var buf strings.Builder
+	tmpl.Execute(&buf, data)
+	return buf.String()
 }
 
 func getFilterReasonDetails(reason string) (string, string) {
@@ -1619,115 +1554,155 @@ func getFilterReasonDetails(reason string) (string, string) {
 	}
 }
 
+const summaryCardsTemplate = `{{range .}}
+<div class="bg-white rounded-lg shadow-md p-6 {{.BgColor}}">
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-sm font-medium text-gray-600">{{.Icon}} {{.Title}}</p>
+            <p class="text-2xl font-bold text-gray-900">{{printf "%.1f" .Pct}}%</p>
+            <p class="text-xs text-gray-500">{{.Covered}}/{{.Total}} covered</p>
+        </div>
+        <div class="text-2xl">{{.Icon}}</div>
+    </div>
+    <div class="mt-4">
+        <div class="bg-gray-200 rounded-full h-2">
+            <div class="bg-blue-600 h-2 rounded-full" style="width: {{printf "%.1f" .Pct}}%"></div>
+        </div>
+    </div>
+</div>{{end}}`
+
+type cardData struct {
+	Title   string
+	Icon    string
+	Pct     float64
+	Covered int
+	Total   int
+	BgColor string
+}
+
 func generateSummaryCards(metrics CoverageMetrics) string {
-	cards := []struct {
-		title string
-		stat  CoverageStat
-		icon  string
-	}{
-		{"Statements", metrics.Statements, "📊"},
-		{"Functions", metrics.Functions, "⚡"},
-		{"Lines", metrics.Lines, "📝"},
-		{"Overall", CoverageStat{Pct: (metrics.Statements.Pct + metrics.Functions.Pct + metrics.Lines.Pct) / 3}, "🎯"},
+	cards := []cardData{
+		{"Statements", "📊", metrics.Statements.Pct, metrics.Statements.Covered, metrics.Statements.Total, getCoverageColor(metrics.Statements.Pct)},
+		{"Functions", "⚡", metrics.Functions.Pct, metrics.Functions.Covered, metrics.Functions.Total, getCoverageColor(metrics.Functions.Pct)},
+		{"Lines", "📝", metrics.Lines.Pct, metrics.Lines.Covered, metrics.Lines.Total, getCoverageColor(metrics.Lines.Pct)},
+		{"Overall", "🎯", (metrics.Statements.Pct + metrics.Functions.Pct + metrics.Lines.Pct) / 3, 0, 0, getCoverageColor((metrics.Statements.Pct + metrics.Functions.Pct + metrics.Lines.Pct) / 3)},
 	}
 
-	var result strings.Builder
-	for _, card := range cards {
-		bgColor := getCoverageColor(card.stat.Pct)
-		result.WriteString(fmt.Sprintf(`
-            <div class="bg-white rounded-lg shadow-md p-6 %s">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm font-medium text-gray-600">%s %s</p>
-                        <p class="text-2xl font-bold text-gray-900">%.1f%%</p>
-                        <p class="text-xs text-gray-500">%d/%d covered</p>
-                    </div>
-                    <div class="text-2xl">%s</div>
-                </div>
-                <div class="mt-4">
-                    <div class="bg-gray-200 rounded-full h-2">
-                        <div class="bg-blue-600 h-2 rounded-full" style="width: %.1f%%"></div>
-                    </div>
-                </div>
-            </div>`,
-			bgColor, card.icon, card.title, card.stat.Pct, card.stat.Covered, card.stat.Total, card.icon, card.stat.Pct))
-	}
-	return result.String()
+	tmpl := template.Must(template.New("cards").Parse(summaryCardsTemplate))
+	var buf strings.Builder
+	tmpl.Execute(&buf, cards)
+	return buf.String()
+}
+
+const fileTableTemplate = `{{range .}}
+<tr class="hover:bg-gray-50 cursor-pointer" onclick="toggleFile('file-{{.ScriptID}}')">
+    <td class="px-6 py-4 text-sm text-blue-600 hover:text-blue-800">{{.FileName}}</td>
+    <td class="px-6 py-4 text-sm text-gray-900">
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{.StmtBadgeColor}}">
+            {{printf "%.1f" .Metrics.Statements.Pct}}% ({{.Metrics.Statements.Covered}}/{{.Metrics.Statements.Total}})
+        </span>
+    </td>
+    <td class="px-6 py-4 text-sm text-gray-900">
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{.FuncBadgeColor}}">
+            {{printf "%.1f" .Metrics.Functions.Pct}}% ({{.Metrics.Functions.Covered}}/{{.Metrics.Functions.Total}})
+        </span>
+    </td>
+    <td class="px-6 py-4 text-sm text-gray-900">
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{.LinesBadgeColor}}">
+            {{printf "%.1f" .Metrics.Lines.Pct}}% ({{.Metrics.Lines.Covered}}/{{.Metrics.Lines.Total}})
+        </span>
+    </td>
+</tr>{{end}}`
+
+const fileDetailsTemplate = `{{range .}}
+<div id="file-{{.ScriptID}}" class="hidden bg-white rounded-lg shadow-md mb-6">
+    <div class="px-6 py-4 border-b border-gray-200">
+        <h3 class="text-lg font-semibold text-gray-900">{{.FileName}}</h3>
+        <div class="mt-2 flex space-x-4 text-sm text-gray-600">
+            <span>Statements: {{printf "%.1f" .Metrics.Statements.Pct}}%</span>
+            <span>Functions: {{printf "%.1f" .Metrics.Functions.Pct}}%</span>
+            <span>Lines: {{printf "%.1f" .Metrics.Lines.Pct}}%</span>
+        </div>
+    </div>
+    <div class="p-0">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <tbody>{{.SourceLines}}</tbody>
+            </table>
+        </div>
+    </div>
+</div>{{end}}`
+
+type fileData struct {
+	ScriptID        string
+	FileName        string
+	Metrics         CoverageMetrics
+	StmtBadgeColor  string
+	FuncBadgeColor  string
+	LinesBadgeColor string
+	SourceLines     string
 }
 
 func generateFileTable(entries []FileEntry) string {
-	var result strings.Builder
+	var files []fileData
 	for _, entry := range entries {
 		fileName := entry.URL
 		if fileName == "" {
 			fileName = fmt.Sprintf("Script %s", entry.ScriptID)
 		}
-
-		result.WriteString(fmt.Sprintf(`
-                        <tr class="hover:bg-gray-50 cursor-pointer" onclick="toggleFile('file-%s')">
-                            <td class="px-6 py-4 text-sm text-blue-600 hover:text-blue-800">%s</td>
-                            <td class="px-6 py-4 text-sm text-gray-900">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium %s">
-                                    %.1f%% (%d/%d)
-                                </span>
-                            </td>
-                            <td class="px-6 py-4 text-sm text-gray-900">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium %s">
-                                    %.1f%% (%d/%d)
-                                </span>
-                            </td>
-                            <td class="px-6 py-4 text-sm text-gray-900">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium %s">
-                                    %.1f%% (%d/%d)
-                                </span>
-                            </td>
-                        </tr>`,
-			entry.ScriptID, fileName,
-			getCoverageBadgeColor(entry.Metrics.Statements.Pct), entry.Metrics.Statements.Pct, entry.Metrics.Statements.Covered, entry.Metrics.Statements.Total,
-			getCoverageBadgeColor(entry.Metrics.Functions.Pct), entry.Metrics.Functions.Pct, entry.Metrics.Functions.Covered, entry.Metrics.Functions.Total,
-			getCoverageBadgeColor(entry.Metrics.Lines.Pct), entry.Metrics.Lines.Pct, entry.Metrics.Lines.Covered, entry.Metrics.Lines.Total))
+		files = append(files, fileData{
+			ScriptID:        string(entry.ScriptID),
+			FileName:        fileName,
+			Metrics:         entry.Metrics,
+			StmtBadgeColor:  getCoverageBadgeColor(entry.Metrics.Statements.Pct),
+			FuncBadgeColor:  getCoverageBadgeColor(entry.Metrics.Functions.Pct),
+			LinesBadgeColor: getCoverageBadgeColor(entry.Metrics.Lines.Pct),
+		})
 	}
-	return result.String()
+
+	tmpl := template.Must(template.New("fileTable").Parse(fileTableTemplate))
+	var buf strings.Builder
+	tmpl.Execute(&buf, files)
+	return buf.String()
 }
 
 func generateFileDetails(entries []FileEntry) string {
-	var result strings.Builder
+	var files []fileData
 	for _, entry := range entries {
 		fileName := entry.URL
 		if fileName == "" {
 			fileName = fmt.Sprintf("Script %s", entry.ScriptID)
 		}
-
-		result.WriteString(fmt.Sprintf(`
-        <div id="file-%s" class="hidden bg-white rounded-lg shadow-md mb-6">
-            <div class="px-6 py-4 border-b border-gray-200">
-                <h3 class="text-lg font-semibold text-gray-900">%s</h3>
-                <div class="mt-2 flex space-x-4 text-sm text-gray-600">
-                    <span>Statements: %.1f%%</span>
-                    <span>Functions: %.1f%%</span>
-                    <span>Lines: %.1f%%</span>
-                </div>
-            </div>
-            <div class="p-0">
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
-                        <tbody>%s</tbody>
-                    </table>
-                </div>
-            </div>
-        </div>`,
-			entry.ScriptID, fileName,
-			entry.Metrics.Statements.Pct, entry.Metrics.Functions.Pct, entry.Metrics.Lines.Pct,
-			generateSourceLines(entry)))
+		files = append(files, fileData{
+			ScriptID:    string(entry.ScriptID),
+			FileName:    fileName,
+			Metrics:     entry.Metrics,
+			SourceLines: generateSourceLines(entry),
+		})
 	}
-	return result.String()
+
+	tmpl := template.Must(template.New("fileDetails").Parse(fileDetailsTemplate))
+	var buf strings.Builder
+	tmpl.Execute(&buf, files)
+	return buf.String()
+}
+
+const sourceLineTemplate = `{{range .}}
+<tr class="{{.LineClass}}">
+    <td class="line-number px-4 py-1 text-right text-gray-500 select-none w-16">{{.LineNumber}}</td>
+    <td class="px-4 py-1">
+        <pre class="whitespace-pre-wrap font-mono text-xs"><code class="language-javascript">{{.EscapedLine}}</code></pre>
+    </td>
+</tr>{{end}}`
+
+type lineData struct {
+	LineNumber  int
+	LineClass   string
+	EscapedLine string
 }
 
 func generateSourceLines(entry FileEntry) string {
-	var result strings.Builder
 	sourceLen := len(entry.Source)
-
-	// Create coverage map
 	coverage := make([]bool, sourceLen)
 	for _, r := range entry.Ranges {
 		if r.Count > 0 {
@@ -1737,29 +1712,24 @@ func generateSourceLines(entry FileEntry) string {
 		}
 	}
 
+	var lines []lineData
 	for lineNum, line := range entry.Lines {
-		// Determine if line is covered
 		lineStart := 0
 		for i := 0; i < lineNum; i++ {
-			lineStart += len(entry.Lines[i]) + 1 // +1 for newline
+			lineStart += len(entry.Lines[i]) + 1
 		}
 		lineEnd := lineStart + len(line)
 
-		lineCovered := false
-		hasExecutableCode := false
+		lineClass := ""
 		trimmed := strings.TrimSpace(line)
 		if trimmed != "" && !strings.HasPrefix(trimmed, "//") && !strings.HasPrefix(trimmed, "/*") {
-			hasExecutableCode = true
+			lineCovered := false
 			for k := lineStart; k < lineEnd && k < len(coverage); k++ {
 				if coverage[k] {
 					lineCovered = true
 					break
 				}
 			}
-		}
-
-		lineClass := ""
-		if hasExecutableCode {
 			if lineCovered {
 				lineClass = "line-covered"
 			} else {
@@ -1767,35 +1737,40 @@ func generateSourceLines(entry FileEntry) string {
 			}
 		}
 
-		result.WriteString(fmt.Sprintf(`
-                            <tr class="%s">
-                                <td class="line-number px-4 py-1 text-right text-gray-500 select-none w-16">%d</td>
-                                <td class="px-4 py-1">
-                                    <pre class="whitespace-pre-wrap font-mono text-xs"><code class="language-javascript">%s</code></pre>
-                                </td>
-                            </tr>`,
-			lineClass, lineNum+1, strings.Replace(strings.Replace(line, "<", "&lt;", -1), ">", "&gt;", -1)))
+		lines = append(lines, lineData{
+			LineNumber:  lineNum + 1,
+			LineClass:   lineClass,
+			EscapedLine: strings.Replace(strings.Replace(line, "<", "&lt;", -1), ">", "&gt;", -1),
+		})
 	}
 
-	return result.String()
+	tmpl := template.Must(template.New("sourceLines").Parse(sourceLineTemplate))
+	var buf strings.Builder
+	tmpl.Execute(&buf, lines)
+	return buf.String()
 }
 
+// Consolidated color helper functions
 func getCoverageColor(pct float64) string {
-	if pct >= 80 {
+	switch {
+	case pct >= 80:
 		return "coverage-high"
-	} else if pct >= 60 {
+	case pct >= 60:
 		return "coverage-medium"
+	default:
+		return "coverage-low"
 	}
-	return "coverage-low"
 }
 
 func getCoverageBadgeColor(pct float64) string {
-	if pct >= 80 {
+	switch {
+	case pct >= 80:
 		return "bg-green-100 text-green-800"
-	} else if pct >= 60 {
+	case pct >= 60:
 		return "bg-yellow-100 text-yellow-800"
+	default:
+		return "bg-red-100 text-red-800"
 	}
-	return "bg-red-100 text-red-800"
 }
 
 func generateCoverageIndex(goPct, jsPct float64) {
