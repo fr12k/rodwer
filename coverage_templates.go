@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -515,40 +514,4 @@ func calculateCoverageMetrics(source string, ranges []*proto.ProfilerCoverageRan
 	}
 }
 
-// filterApplicationScriptsWithStats filters scripts and returns detailed statistics
-func filterApplicationScriptsWithStats(scripts []*proto.ProfilerScriptCoverage, sources map[int]string, options CoverageFilterOptions) ([]int, FilteringStats) {
-	startTime := time.Now()
-
-	var applicationScripts []int
-	stats := FilteringStats{
-		TotalScripts:  len(scripts),
-		FilterReasons: make(map[string]int),
-	}
-
-	for i, script := range scripts {
-		source := sources[i]
-		if source == "" {
-			stats.FilterReasons["source_unavailable"]++
-			continue
-		}
-
-		isApp, reason := isApplicationScript(script, source, options)
-		stats.FilterReasons[reason]++
-
-		if isApp {
-			applicationScripts = append(applicationScripts, i)
-		}
-	}
-
-	stats.ApplicationScripts = len(applicationScripts)
-	stats.FilteredOut = stats.TotalScripts - stats.ApplicationScripts
-
-	// Calculate timing metrics
-	processingTime := time.Since(startTime)
-	stats.ProcessingTimeMs = processingTime.Nanoseconds() / 1000000
-	if stats.TotalScripts > 0 {
-		stats.AverageTimePerScript = float64(stats.ProcessingTimeMs) / float64(stats.TotalScripts)
-	}
-
-	return applicationScripts, stats
-}
+// filterApplicationScriptsWithStats was removed - unused function with 0% coverage
