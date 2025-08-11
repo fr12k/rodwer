@@ -481,6 +481,29 @@ func TestCoverageReport(t *testing.T) {
 			ScriptID: proto.RuntimeScriptID(fmt.Sprintf("script-%d", i)),
 			URL:      entry.URL,
 		}
+
+		// Convert CoverageEntry.Ranges to Functions format if available
+		if len(entry.Ranges) > 0 {
+			functions := make([]*proto.ProfilerFunctionCoverage, 1)
+			ranges := make([]*proto.ProfilerCoverageRange, 0)
+
+			for _, r := range entry.Ranges {
+				ranges = append(ranges, &proto.ProfilerCoverageRange{
+					StartOffset: r.Start,
+					EndOffset:   r.End,
+					Count:       r.Count,
+				})
+			}
+
+			functions[0] = &proto.ProfilerFunctionCoverage{
+				FunctionName:    "main",
+				IsBlockCoverage: true,
+				Ranges:          ranges,
+			}
+
+			scriptCov.Functions = functions
+		}
+
 		rawData = append(rawData, scriptCov)
 	}
 	b, _ := json.MarshalIndent(rawData, "", "  ")
