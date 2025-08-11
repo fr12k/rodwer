@@ -122,6 +122,14 @@ func NewTestServer() (*TestServer, func()) {
 		w.Write([]byte(html))
 	})
 
+	// Roadmap page for coverage testing
+	mux.HandleFunc("/roadmap", func(w http.ResponseWriter, r *http.Request) {
+		html := RoadmapTestHTML()
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(html))
+	})
+
 	// Delay endpoint for timeout testing (similar to httpbin.org/delay)
 	mux.HandleFunc("/delay/", func(w http.ResponseWriter, r *http.Request) {
 		// Extract delay seconds from URL path
