@@ -867,6 +867,60 @@ func (e Element) TagName() (string, error) {
 	return val.String(), nil
 }
 
+// Element finds a child element by CSS selector
+func (e Element) Element(selector string) (Element, error) {
+	if e.element == nil {
+		return Element{}, fmt.Errorf("element is nil")
+	}
+
+	child, err := e.element.Element(selector)
+	if err != nil {
+		return Element{}, fmt.Errorf("child element not found %s: %w", selector, err)
+	}
+
+	return Element{
+		element: child,
+		page:    e.page,
+	}, nil
+}
+
+// Elements finds multiple child elements by CSS selector
+func (e Element) Elements(selector string) ([]Element, error) {
+	if e.element == nil {
+		return nil, fmt.Errorf("element is nil")
+	}
+
+	rodElements, err := e.element.Elements(selector)
+	if err != nil {
+		return nil, fmt.Errorf("child elements not found %s: %w", selector, err)
+	}
+
+	elements := make([]Element, len(rodElements))
+	for i, el := range rodElements {
+		elements[i] = Element{element: el, page: e.page}
+	}
+
+	return elements, nil
+}
+
+// Attribute returns the value of an HTML attribute
+func (e Element) Attribute(name string) (string, error) {
+	if e.element == nil {
+		return "", fmt.Errorf("element is nil")
+	}
+
+	val, err := e.element.Attribute(name)
+	if err != nil {
+		return "", fmt.Errorf("failed to get attribute %s: %w", name, err)
+	}
+
+	if val == nil {
+		return "", nil
+	}
+
+	return *val, nil
+}
+
 // Screenshot takes a screenshot of the element
 func (e Element) Screenshot() ([]byte, error) {
 	if e.element == nil {

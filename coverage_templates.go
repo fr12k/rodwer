@@ -385,7 +385,7 @@ func generateSourceLines(entry FileEntry) string {
 		lines = append(lines, lineData{
 			LineNumber:  lineNum + 1,
 			LineClass:   lineClass,
-			EscapedLine: strings.Replace(strings.Replace(line, "<", "&lt;", -1), ">", "&gt;", -1),
+			EscapedLine: strings.ReplaceAll(strings.ReplaceAll(line, "<", "&lt;"), ">", "&gt;"),
 		})
 	}
 
