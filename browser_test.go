@@ -288,6 +288,106 @@ func (s *BrowserTestSuite) TestElementSelectionAndInteraction() {
 	}
 }
 
+func (s *BrowserTestSuite) TestElementChildSelectionAndAttributes() {
+	browser, err := NewBrowser(BrowserOptions{Headless: true})
+	s.Require().NoError(err)
+	defer browser.Close()
+
+	page, err := browser.NewPage()
+	s.Require().NoError(err)
+	defer page.Close()
+
+	testHTML := `
+	<html>
+	<body>
+		<div id="results">
+			<div class="result">
+				<h3>First Result</h3>
+				<a href="https://example.com/1">Link 1</a>
+				<p class="desc">Description 1</p>
+			</div>
+			<div class="result">
+				<h3>Second Result</h3>
+				<a href="https://example.com/2">Link 2</a>
+				<p class="desc">Description 2</p>
+			</div>
+		</div>
+		<span id="no-href">No link here</span>
+	</body>
+	</html>`
+
+	err = page.Navigate("data:text/html," + testHTML)
+	s.Require().NoError(err)
+
+	s.Run("Element.Element finds child element", func() {
+		container, err := page.Element("#results")
+		s.Require().NoError(err)
+
+		firstResult, err := container.Element(".result")
+		s.Require().NoError(err)
+
+		h3, err := firstResult.Element("h3")
+		s.Require().NoError(err)
+
+		text, err := h3.Text()
+		s.Require().NoError(err)
+		s.Equal("First Result", text)
+	})
+
+	s.Run("Element.Elements finds multiple children", func() {
+		container, err := page.Element("#results")
+		s.Require().NoError(err)
+
+		results, err := container.Elements(".result")
+		s.Require().NoError(err)
+		s.Len(results, 2)
+
+		h3, err := results[1].Element("h3")
+		s.Require().NoError(err)
+
+		text, err := h3.Text()
+		s.Require().NoError(err)
+		s.Equal("Second Result", text)
+	})
+
+	s.Run("Element.Attribute reads href", func() {
+		firstResult, err := page.Element(".result")
+		s.Require().NoError(err)
+
+		link, err := firstResult.Element("a")
+		s.Require().NoError(err)
+
+		href, err := link.Attribute("href")
+		s.Require().NoError(err)
+		s.Equal("https://example.com/1", href)
+	})
+
+	s.Run("Element.Attribute returns empty for missing attribute", func() {
+		span, err := page.Element("#no-href")
+		s.Require().NoError(err)
+
+		val, err := span.Attribute("href")
+		s.Require().NoError(err)
+		s.Equal("", val)
+	})
+
+	s.Run("nil element returns error", func() {
+		nilEl := Element{}
+
+		_, err := nilEl.Element("div")
+		s.Error(err)
+		s.Contains(err.Error(), "element is nil")
+
+		_, err = nilEl.Elements("div")
+		s.Error(err)
+		s.Contains(err.Error(), "element is nil")
+
+		_, err = nilEl.Attribute("href")
+		s.Error(err)
+		s.Contains(err.Error(), "element is nil")
+	})
+}
+
 func (s *BrowserTestSuite) TestWaitingAndTimeouts() {
 	browser, err := NewBrowser(BrowserOptions{Headless: true})
 	s.Require().NoError(err)
