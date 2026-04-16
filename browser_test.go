@@ -419,12 +419,12 @@ func TestCoverageReport(t *testing.T) {
 
 	browser, err := NewBrowser(browserOpts)
 	require.NoError(t, err)
-	defer func() { require.NoError(t, browser.Close()) }()
+	defer deferSafe(t, browser.Close)
 
 	// Create new page
 	page, err := browser.NewPage()
 	require.NoError(t, err)
-	defer func() { require.NoError(t, page.Close()) }()
+	defer deferSafe(t, page.Close)
 
 	// Start JavaScript coverage collection
 	require.NoError(t, page.StartJSCoverage())

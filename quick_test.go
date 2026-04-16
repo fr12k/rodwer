@@ -33,7 +33,7 @@ func TestQuick(t *testing.T) {
 		// Test page creation
 		page, err := browser.NewPage()
 		require.NoError(t, err)
-		defer func() { require.NoError(t, page.Close()) }()
+		defer deferSafe(t, page.Close)
 
 		assert.NotNil(t, page, "Page should not be nil")
 	})
@@ -181,5 +181,3 @@ func TestQuick(t *testing.T) {
 		assert.Less(t, len(screenshot), 1000000, "Screenshot should not be excessively large")
 	})
 }
-
-func deferSafe(t *testing.T, f func() error) { require.NoError(t, f()) }

@@ -6,8 +6,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"testing"
 	"time"
 )
+
+func deferSafe(t *testing.T, f func() error) {
+	t.Helper()
+	if err := f(); err != nil {
+		t.Errorf("deferred cleanup failed: %v", err)
+	}
+}
+
+func deferSafeB(b *testing.B, f func() error) {
+	b.Helper()
+	if err := f(); err != nil {
+		b.Errorf("deferred cleanup failed: %v", err)
+	}
+}
+
+func writeResponse(w http.ResponseWriter, data []byte, context string) {
+	if _, err := w.Write(data); err != nil {
+		log.Printf("failed to write %s response: %v", context, err)
+	}
+}
 
 // TestServer represents a test HTTP server for testing browser interactions
 type TestServer struct {
@@ -22,9 +43,7 @@ func NewTestServer() (*TestServer, func()) {
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("OK")); err != nil {
-			log.Printf("failed to write health response: %v", err)
-		}
+		writeResponse(w, []byte("OK"), "health")
 	})
 
 	// Static HTML pages for testing
@@ -49,9 +68,7 @@ func NewTestServer() (*TestServer, func()) {
 		</body>
 		</html>`
 		w.Header().Set("Content-Type", "text/html")
-		if _, err := w.Write([]byte(html)); err != nil {
-			log.Printf("failed to write root response: %v", err)
-		}
+		writeResponse(w, []byte(html), "root")
 	})
 
 	// Form page for testing interactions
@@ -69,9 +86,7 @@ func NewTestServer() (*TestServer, func()) {
 			</body>
 			</html>`, name, email)
 			w.Header().Set("Content-Type", "text/html")
-			if _, err := w.Write([]byte(html)); err != nil {
-				log.Printf("failed to write form response: %v", err)
-			}
+			writeResponse(w, []byte(html), "form submit")
 			return
 		}
 
@@ -92,18 +107,14 @@ func NewTestServer() (*TestServer, func()) {
 		</body>
 		</html>`
 		w.Header().Set("Content-Type", "text/html")
-		if _, err := w.Write([]byte(html)); err != nil {
-			log.Printf("failed to write form page response: %v", err)
-		}
+		writeResponse(w, []byte(html), "form page")
 	})
 
 	// Slow loading page for timeout testing
 	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.Header().Set("Content-Type", "text/html")
-		if _, err := w.Write([]byte(`<html><body><h1>Slow Page</h1></body></html>`)); err != nil {
-			log.Printf("failed to write slow page response: %v", err)
-		}
+		writeResponse(w, []byte(`<html><body><h1>Slow Page</h1></body></html>`), "slow")
 	})
 
 	// Dynamic content page for waiting tests
@@ -125,9 +136,7 @@ func NewTestServer() (*TestServer, func()) {
 		</body>
 		</html>`
 		w.Header().Set("Content-Type", "text/html")
-		if _, err := w.Write([]byte(html)); err != nil {
-			log.Printf("failed to write dynamic page response: %v", err)
-		}
+		writeResponse(w, []byte(html), "dynamic")
 	})
 
 	// Roadmap page for coverage testing
@@ -135,9 +144,7 @@ func NewTestServer() (*TestServer, func()) {
 		html := RoadmapTestHTML()
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(html)); err != nil {
-			log.Printf("failed to write roadmap response: %v", err)
-		}
+		writeResponse(w, []byte(html), "roadmap")
 	})
 
 	// Delay endpoint for timeout testing (similar to httpbin.org/delay)
@@ -171,9 +178,7 @@ func NewTestServer() (*TestServer, func()) {
 
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(html)); err != nil {
-			log.Printf("failed to write delay response: %v", err)
-		}
+		writeResponse(w, []byte(html), "delay")
 	})
 
 	server := httptest.NewServer(mux)

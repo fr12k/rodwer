@@ -349,7 +349,11 @@ func (s *FrameworkTestSuite) TestScreenshotToFile() {
 
 	// Test page screenshot to file with default options
 	testDir := "test_screenshots"
-	defer func() { s.Require().NoError(os.RemoveAll(testDir)) }() // Clean up after test
+	defer func() {
+		if err := os.RemoveAll(testDir); err != nil {
+			s.T().Errorf("failed to remove test dir: %v", err)
+		}
+	}()
 
 	// Test ScreenshotSimpleToFile
 	err = page.ScreenshotSimpleToFile(filepath.Join(testDir, "simple_test.png"))
@@ -833,5 +837,3 @@ func (s *FrameworkTestSuite) TestGenerateReportFromPage() {
 		s.NotNil(stats, "GenerateReportFromPage should return stats")
 	})
 }
-
-func deferSafeB(b *testing.B, f func() error) { require.NoError(b, f()) }

@@ -38,3 +38,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+  - package-ecosystem: "gomod"
+    directory: "examples/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+    groups:
+      minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
