@@ -291,10 +291,17 @@ func (cr *CoverageReporter) generateJSReportUnified(raw []*proto.ProfilerScriptC
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].URL < entries[j].URL })
 
-	html := generateIstanbulStyleHTML(entries, totalMetrics, filterStats)
+	html, err := generateIstanbulStyleHTML(entries, totalMetrics, filterStats)
+	if err != nil {
+		outputFunc("Failed to generate HTML coverage report: %v", err)
+		return filterStats
+	}
 
 	jsHTML := "coverage/js-coverage.html"
-	_ = os.WriteFile(jsHTML, []byte(html), 0644)
+	if err := os.WriteFile(jsHTML, []byte(html), 0644); err != nil {
+		outputFunc("Failed to write HTML coverage report: %v", err)
+		return filterStats
+	}
 
 	outputFunc("JavaScript coverage report written to %s", jsHTML)
 	outputFunc("Coverage Summary - Statements: %.1f%%, Functions: %.1f%%, Lines: %.1f%%",
@@ -396,21 +403,43 @@ const istanbulHTMLTemplate = `<!DOCTYPE html>
 </html>`
 
 // generateIstanbulStyleHTML generates the HTML report
-func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics, filterStats FilteringStats) string {
+func generateIstanbulStyleHTML(entries []FileEntry, totalMetrics CoverageMetrics, filterStats FilteringStats) (string, error) {
 	tmpl := template.Must(template.New("coverage").Parse(istanbulHTMLTemplate))
+
+	summaryCards, err := generateSummaryCards(totalMetrics)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate summary cards: %w", err)
+	}
+
+	filteringStats, err := generateFilteringStats(filterStats)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate filtering stats: %w", err)
+	}
+
+	fileTable, err := generateFileTable(entries)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate file table: %w", err)
+	}
+
+	fileDetails, err := generateFileDetails(entries)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate file details: %w", err)
+	}
 
 	data := htmlData{
 		Timestamp:      time.Now().Format("2006-01-02 15:04:05"),
 		FilterStats:    filterStats,
-		SummaryCards:   generateSummaryCards(totalMetrics),
-		FilteringStats: generateFilteringStats(filterStats),
-		FileTable:      generateFileTable(entries),
-		FileDetails:    generateFileDetails(entries),
+		SummaryCards:   summaryCards,
+		FilteringStats: filteringStats,
+		FileTable:      fileTable,
+		FileDetails:    fileDetails,
 	}
 
 	var buf strings.Builder
-	tmpl.Execute(&buf, data)
-	return buf.String()
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute coverage HTML template: %w", err)
+	}
+	return buf.String(), nil
 }
 
 type htmlData struct {

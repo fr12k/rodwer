@@ -94,7 +94,7 @@ func (s *FrameworkTestSuite) TestPageNavigation() {
 
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	tests := []struct {
 		name     string
@@ -150,7 +150,7 @@ func (s *FrameworkTestSuite) TestPageNavigation() {
 func (s *FrameworkTestSuite) TestElementSelection() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Navigate to a test page (this will fail until we implement)
 	err = page.Navigate("data:text/html,<html><body><h1 id='title'>Test Page</h1><button class='btn'>Click Me</button></body></html>")
@@ -225,7 +225,7 @@ func (s *FrameworkTestSuite) TestElementSelection() {
 func (s *FrameworkTestSuite) TestElementInteraction() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Create a test page with interactive elements
 	html := `
@@ -288,7 +288,7 @@ func (s *FrameworkTestSuite) TestElementInteraction() {
 func (s *FrameworkTestSuite) TestScreenshotCapture() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	err = page.Navigate("data:text/html,<html><body><h1>Screenshot Test</h1></body></html>")
 	s.Require().NoError(err)
@@ -342,14 +342,18 @@ func (s *FrameworkTestSuite) TestScreenshotCapture() {
 func (s *FrameworkTestSuite) TestScreenshotToFile() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	err = page.Navigate("data:text/html,<html><body><h1>ScreenshotToFile Test</h1><p id='test-element'>Test Element</p></body></html>")
 	s.Require().NoError(err)
 
 	// Test page screenshot to file with default options
 	testDir := "test_screenshots"
-	defer os.RemoveAll(testDir) // Clean up after test
+	defer func() {
+		if err := os.RemoveAll(testDir); err != nil {
+			s.T().Errorf("failed to remove test dir: %v", err)
+		}
+	}()
 
 	// Test ScreenshotSimpleToFile
 	err = page.ScreenshotSimpleToFile(filepath.Join(testDir, "simple_test.png"))
@@ -379,7 +383,7 @@ func (s *FrameworkTestSuite) TestScreenshotToFile() {
 func (s *FrameworkTestSuite) TestCoverageCollection() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Enable coverage collection
 	err = page.StartJSCoverage()
@@ -446,8 +450,7 @@ func (s *FrameworkTestSuite) TestMultiplePages() {
 
 	// Clean up all pages
 	for _, page := range pages {
-		err := page.Close()
-		s.NoError(err)
+		defer deferSafe(s.T(), page.Close)
 	}
 }
 
@@ -536,7 +539,7 @@ func TestTestHelpers(t *testing.T) {
 		// Test that server is accessible
 		resp, err := server.Client().Get(server.URL + "/health")
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer deferSafe(t, resp.Body.Close)
 		assert.Equal(t, 200, resp.StatusCode)
 	})
 
@@ -553,7 +556,9 @@ func BenchmarkBrowserCreation(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		browser.Close()
+		if err := browser.Close(); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -568,7 +573,7 @@ func BenchmarkPageNavigation(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer page.Close()
+	defer deferSafeB(b, page.Close)
 
 	url := "data:text/html,<html><body><h1>Benchmark Test</h1></body></html>"
 
@@ -592,7 +597,7 @@ func BenchmarkElementSelection(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer page.Close()
+	defer deferSafeB(b, page.Close)
 
 	html := `<html><body><div id="test">Test Element</div></body></html>`
 	err = page.Navigate("data:text/html," + html)
@@ -612,7 +617,7 @@ func BenchmarkElementSelection(b *testing.B) {
 func (s *FrameworkTestSuite) TestWaitForAsyncJavaScript() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err, "Failed to create page")
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Test with HTML that has async operations
 	html := `
@@ -687,7 +692,7 @@ func (s *FrameworkTestSuite) TestWaitForAsyncJavaScript() {
 func (s *FrameworkTestSuite) TestWaitForCustomCondition() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err, "Failed to create page")
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Test with HTML that has a dynamic element
 	html := `
@@ -770,7 +775,7 @@ func (s *FrameworkTestSuite) TestWaitForCustomCondition() {
 func (s *FrameworkTestSuite) TestGenerateReportFromPage() {
 	page, err := s.browser.NewPage()
 	s.Require().NoError(err, "Failed to create page")
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Navigate to a page with JavaScript
 	html := `

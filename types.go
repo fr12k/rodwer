@@ -124,28 +124,30 @@ func NewBrowser(options BrowserOptions) (*Browser, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Configure launcher
-	launcher := launcher.New()
-	launcher.Headless(options.Headless)
+	l := launcher.New()
+	l.Headless(options.Headless)
 
 	// if options.NoSandbox {
-	launcher.NoSandbox(true)
+	l.NoSandbox(true)
 	// }
 
 	if options.DevTools {
-		launcher.Devtools(true)
+		l.Devtools(true)
 	}
 
 	if options.ExecutablePath != "" {
-		launcher.Bin(options.ExecutablePath)
+		l.Bin(options.ExecutablePath)
+	} else if bin, found := launcher.LookPath(); found {
+		l.Bin(bin)
 	}
 
 	// Add custom arguments
 	for _, arg := range options.Args {
-		launcher.Set("args", arg)
+		l.Set("args", arg)
 	}
 
 	// Launch browser
-	controlURL, err := launcher.Launch()
+	controlURL, err := l.Launch()
 	if err != nil {
 		cancel()
 		// Check if it's an executable not found error
@@ -163,14 +165,9 @@ func NewBrowser(options BrowserOptions) (*Browser, error) {
 	}
 
 	// Configure browser settings
-	if options.UserAgent != "" {
-		// Set user agent for new pages
-		// Note: This will be applied to pages when they are created
-	}
-
 	b := &Browser{
 		browser:  browser,
-		launcher: launcher,
+		launcher: l,
 		ctx:      ctx,
 		cancel:   cancel,
 		options:  options,
@@ -963,12 +960,6 @@ func (e Element) ScreenshotToFile(filePath string) error {
 
 	// Write screenshot to file using helper
 	return writeScreenshotToFile(filePath, data)
-}
-
-// Helper function to check if file exists
-func fileExists(filename string) bool {
-	_, err := os.Stat(filename)
-	return err == nil
 }
 
 // screenshotPage captures a full page or viewport screenshot

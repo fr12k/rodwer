@@ -33,7 +33,7 @@ func TestQuick(t *testing.T) {
 		// Test page creation
 		page, err := browser.NewPage()
 		require.NoError(t, err)
-		defer page.Close()
+		defer deferSafe(t, page.Close)
 
 		assert.NotNil(t, page, "Page should not be nil")
 	})
@@ -47,7 +47,6 @@ func TestQuick(t *testing.T) {
 
 		page, err := browser.NewPage()
 		require.NoError(t, err)
-		defer page.Close()
 
 		// Use data URL for instant navigation (no network)
 		testHTML := `<html><body><h1 id="title">Quick Test</h1><button class="btn">Click</button></body></html>`
@@ -69,7 +68,7 @@ func TestQuick(t *testing.T) {
 
 		page, err := browser.NewPage()
 		require.NoError(t, err)
-		defer page.Close()
+		defer deferSafe(t, page.Close)
 
 		// Simple HTML for testing
 		testHTML := `<html><body>
@@ -112,7 +111,7 @@ func TestQuick(t *testing.T) {
 
 		page, err := browser.NewPage()
 		require.NoError(t, err)
-		defer page.Close()
+		defer deferSafe(t, page.Close)
 
 		// Interactive HTML
 		testHTML := `<html><body>
@@ -163,7 +162,7 @@ func TestQuick(t *testing.T) {
 
 		page, err := browser.NewPage()
 		require.NoError(t, err)
-		defer page.Close()
+		defer deferSafe(t, page.Close)
 
 		// Simple page for screenshot
 		testHTML := `<html><body style="background: #f0f0f0; padding: 20px;">
