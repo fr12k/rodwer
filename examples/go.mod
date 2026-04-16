@@ -2,7 +2,7 @@ module github/fr12k/rodwer/examples
 
 go 1.24.1
 
-require github.com/fr12k/rodwer v0.0.3
+require github.com/fr12k/rodwer v0.0.4
 
 require (
 	github.com/go-rod/rod v0.116.2 // indirect
