@@ -25,7 +25,7 @@ func TestBasicExample(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	defer browser.Close()
+	defer deferSafe(t, browser.Close)
 
 	// Create a new page
 	page, err := browser.NewPage()
@@ -64,7 +64,7 @@ func TestAdvancedExample(t *testing.T) {
 		Viewport: &Viewport{Width: 1280, Height: 720},
 	})
 	require.NoError(t, err)
-	defer browser.Close()
+	defer deferSafe(t, browser.Close)
 
 	page, err := browser.NewPage()
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestConcurrentBrowsers(t *testing.T) {
 				results <- result{id: id, err: err}
 				return
 			}
-			defer browser.Close()
+			defer deferSafe(t, browser.Close)
 
 			page, err := browser.NewPage()
 			if err != nil {
@@ -163,7 +163,6 @@ func TestConcurrentBrowsers(t *testing.T) {
 			t.Logf("Browser %d completed successfully: title '%s'", res.id, res.title)
 		case <-timeout:
 			t.Logf("Timeout waiting for concurrent browsers. Completed: %d/%d, Successful: %d", completed, numBrowsers, successful)
-			break
 		}
 	}
 
@@ -186,7 +185,7 @@ func TestFormInteraction(t *testing.T) {
 		Viewport: &Viewport{Width: 1024, Height: 768},
 	})
 	require.NoError(t, err)
-	defer browser.Close()
+	defer deferSafe(t, browser.Close)
 
 	page, err := browser.NewPage()
 	require.NoError(t, err)

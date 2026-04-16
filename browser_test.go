@@ -100,13 +100,13 @@ func (s *BrowserTestSuite) TestBrowserCreationAndConnection() {
 func (s *BrowserTestSuite) TestPageCreationAndManagement() {
 	browser, err := NewBrowser(BrowserOptions{Headless: true})
 	s.Require().NoError(err)
-	defer browser.Close()
+	defer deferSafe(s.T(), browser.Close)
 
 	s.Run("create new page", func() {
 		page, err := browser.NewPage()
 		s.Require().NoError(err)
 		s.NotNil(page)
-		defer page.Close()
+		defer deferSafe(s.T(), page.Close)
 
 		// Test page properties
 		s.NotEmpty(page.URL(), "Page should have a URL")
@@ -128,15 +128,14 @@ func (s *BrowserTestSuite) TestPageCreationAndManagement() {
 
 		// Clean up
 		for _, page := range pages {
-			err := page.Close()
-			s.NoError(err)
+			s.NoError(page.Close())
 		}
 	})
 
 	s.Run("page navigation", func() {
 		page, err := browser.NewPage()
 		s.Require().NoError(err)
-		defer page.Close()
+		defer deferSafe(s.T(), page.Close)
 
 		// Test navigation to data URL
 		testHTML := `<html><head><title>Test Page</title></head><body><h1>Hello World</h1></body></html>`
@@ -158,11 +157,11 @@ func (s *BrowserTestSuite) TestPageCreationAndManagement() {
 func (s *BrowserTestSuite) TestElementSelectionAndInteraction() {
 	browser, err := NewBrowser(BrowserOptions{Headless: true})
 	s.Require().NoError(err)
-	defer browser.Close()
+	defer deferSafe(s.T(), browser.Close)
 
 	page, err := browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Navigate to test page
 	testHTML := `
@@ -291,11 +290,11 @@ func (s *BrowserTestSuite) TestElementSelectionAndInteraction() {
 func (s *BrowserTestSuite) TestWaitingAndTimeouts() {
 	browser, err := NewBrowser(BrowserOptions{Headless: true})
 	s.Require().NoError(err)
-	defer browser.Close()
+	defer deferSafe(s.T(), browser.Close)
 
 	page, err := browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	// Test page with dynamic content
 	testHTML := `
@@ -346,11 +345,11 @@ func (s *BrowserTestSuite) TestWaitingAndTimeouts() {
 func (s *BrowserTestSuite) TestScreenshotCapabilities() {
 	browser, err := NewBrowser(BrowserOptions{Headless: true})
 	s.Require().NoError(err)
-	defer browser.Close()
+	defer deferSafe(s.T(), browser.Close)
 
 	page, err := browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	testHTML := `
 	<html>
@@ -420,12 +419,12 @@ func TestCoverageReport(t *testing.T) {
 
 	browser, err := NewBrowser(browserOpts)
 	require.NoError(t, err)
-	defer browser.Close()
+	defer func() { require.NoError(t, browser.Close()) }()
 
 	// Create new page
 	page, err := browser.NewPage()
 	require.NoError(t, err)
-	defer page.Close()
+	defer func() { require.NoError(t, page.Close()) }()
 
 	// Start JavaScript coverage collection
 	require.NoError(t, page.StartJSCoverage())

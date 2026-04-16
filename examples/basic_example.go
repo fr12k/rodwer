@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github/fr12k/rodwer"
+	"github.com/fr12k/rodwer"
 )
 
 func main() {
@@ -19,7 +19,12 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create browser:", err)
 	}
-	defer browser.Close()
+	defer func() {
+		err := browser.Close()
+		if err != nil {
+			log.Fatal("Failed to close browser:", err)
+		}
+	}()
 
 	// Create a new page
 	page, err := browser.NewPage()

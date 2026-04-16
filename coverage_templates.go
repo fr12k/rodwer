@@ -228,9 +228,9 @@ type lineData struct {
 
 // Template generation functions
 
-func generateFilteringStats(stats FilteringStats) string {
+func generateFilteringStats(stats FilteringStats) (string, error) {
 	if len(stats.FilterReasons) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var reasons []reasonData
@@ -253,8 +253,10 @@ func generateFilteringStats(stats FilteringStats) string {
 	}
 
 	var buf strings.Builder
-	tmpl.Execute(&buf, data)
-	return buf.String()
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute filtering stats template: %w", err)
+	}
+	return buf.String(), nil
 }
 
 func getFilterReasonDetails(reason string) (string, string) {
@@ -288,7 +290,7 @@ func getFilterReasonDetails(reason string) (string, string) {
 	return "❓", reason
 }
 
-func generateSummaryCards(metrics CoverageMetrics) string {
+func generateSummaryCards(metrics CoverageMetrics) (string, error) {
 	cards := []cardData{
 		{"Statements", "📊", metrics.Statements.Pct, metrics.Statements.Covered, metrics.Statements.Total, getCoverageColor(metrics.Statements.Pct)},
 		{"Functions", "⚡", metrics.Functions.Pct, metrics.Functions.Covered, metrics.Functions.Total, getCoverageColor(metrics.Functions.Pct)},
@@ -298,11 +300,13 @@ func generateSummaryCards(metrics CoverageMetrics) string {
 
 	tmpl := template.Must(template.New("cards").Parse(summaryCardsTemplate))
 	var buf strings.Builder
-	tmpl.Execute(&buf, cards)
-	return buf.String()
+	if err := tmpl.Execute(&buf, cards); err != nil {
+		return "", fmt.Errorf("failed to execute summary cards template: %w", err)
+	}
+	return buf.String(), nil
 }
 
-func generateFileTable(entries []FileEntry) string {
+func generateFileTable(entries []FileEntry) (string, error) {
 	var files []fileData
 	for _, entry := range entries {
 		fileName := entry.URL
@@ -321,32 +325,40 @@ func generateFileTable(entries []FileEntry) string {
 
 	tmpl := template.Must(template.New("fileTable").Parse(fileTableTemplate))
 	var buf strings.Builder
-	tmpl.Execute(&buf, files)
-	return buf.String()
+	if err := tmpl.Execute(&buf, files); err != nil {
+		return "", fmt.Errorf("failed to execute file table template: %w", err)
+	}
+	return buf.String(), nil
 }
 
-func generateFileDetails(entries []FileEntry) string {
+func generateFileDetails(entries []FileEntry) (string, error) {
 	var files []fileData
 	for _, entry := range entries {
 		fileName := entry.URL
 		if fileName == "" {
 			fileName = fmt.Sprintf("Script %s", entry.ScriptID)
 		}
+		sourceLines, err := generateSourceLines(entry)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate source lines for %s: %w", fileName, err)
+		}
 		files = append(files, fileData{
 			ScriptID:    string(entry.ScriptID),
 			FileName:    fileName,
 			Metrics:     entry.Metrics,
-			SourceLines: generateSourceLines(entry),
+			SourceLines: sourceLines,
 		})
 	}
 
 	tmpl := template.Must(template.New("fileDetails").Parse(fileDetailsTemplate))
 	var buf strings.Builder
-	tmpl.Execute(&buf, files)
-	return buf.String()
+	if err := tmpl.Execute(&buf, files); err != nil {
+		return "", fmt.Errorf("failed to execute file details template: %w", err)
+	}
+	return buf.String(), nil
 }
 
-func generateSourceLines(entry FileEntry) string {
+func generateSourceLines(entry FileEntry) (string, error) {
 	sourceLen := len(entry.Source)
 	coverage := make([]bool, sourceLen)
 	for _, r := range entry.Ranges {
@@ -385,14 +397,16 @@ func generateSourceLines(entry FileEntry) string {
 		lines = append(lines, lineData{
 			LineNumber:  lineNum + 1,
 			LineClass:   lineClass,
-			EscapedLine: strings.Replace(strings.Replace(line, "<", "&lt;", -1), ">", "&gt;", -1),
+			EscapedLine: strings.ReplaceAll(strings.ReplaceAll(line, "<", "&lt;"), ">", "&gt;"),
 		})
 	}
 
 	tmpl := template.Must(template.New("sourceLines").Parse(sourceLineTemplate))
 	var buf strings.Builder
-	tmpl.Execute(&buf, lines)
-	return buf.String()
+	if err := tmpl.Execute(&buf, lines); err != nil {
+		return "", fmt.Errorf("failed to execute source lines template: %w", err)
+	}
+	return buf.String(), nil
 }
 
 // Helper functions for coverage calculations
