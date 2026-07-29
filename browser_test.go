@@ -290,11 +290,11 @@ func (s *BrowserTestSuite) TestElementSelectionAndInteraction() {
 func (s *BrowserTestSuite) TestElementChildSelectionAndAttributes() {
 	browser, err := NewBrowser(BrowserOptions{Headless: true})
 	s.Require().NoError(err)
-	defer browser.Close()
+	defer deferSafe(s.T(), browser.Close)
 
 	page, err := browser.NewPage()
 	s.Require().NoError(err)
-	defer page.Close()
+	defer deferSafe(s.T(), page.Close)
 
 	testHTML := `
 	<html>
